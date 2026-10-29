@@ -18,6 +18,9 @@
 //! - [`recovery`]     -- push-recovery references (trajopt) and their world frame.
 //! - [`config`]       -- every control knob of the walker, with the code's
 //!   defaults (the harness maps its environment onto it).
+//! - [`robot`]        -- the rigid-body model the walker computes with, the
+//!   state it assembles from an estimate (M, h, FK, CoM Jacobian), and the
+//!   per-tick observation.
 
 pub mod profile;
 pub mod gait;
@@ -30,5 +33,6 @@ pub mod height;
 pub mod plan;
 pub mod recovery;
 pub mod config;
+pub mod robot;
 
 pub use profile::Profile;
