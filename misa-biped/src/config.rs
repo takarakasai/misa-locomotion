@@ -23,7 +23,8 @@
 //!
 //! There is no `Default`: the G1 champion's values as the default would move
 //! kyo46rs's baseline, and the code's own defaults depend on the machine
-//! ([`Config::code_defaults`] takes the [`Profile`]).
+//! ([`Config::code_defaults`] takes the [`Profile`]). The two adopted
+//! baselines are presets, [`Config::g1_v619`] and [`Config::kyo46rs_v2`].
 use crate::plan::DcmParams;
 use crate::preview::LandingTiming;
 use crate::profile::Profile;
@@ -377,6 +378,180 @@ impl Config {
             },
             debug: DebugFlags::default(),
         }
+    }
+
+    /// The G1 champion v6.19: the code defaults of [`crate::profile::G1_23DOF`]
+    /// with the control keys of `log/claude_g1champion_20261029v619/controls.json`.
+    /// The rest of that file is the rig (`URDF`, `SOLE_HALF_L`, `SIM_DT`,
+    /// `QD_CLAMP`, `ARMATURE`, `DAMPING_OVERRIDES`, the seeds, the sensor
+    /// model), the scenario (`T`, `STAIR_LANDING_LEN`), the command
+    /// (`STRIDE`'s speed), the reference library and keys no longer read.
+    /// Checked against that file by crates/misa-biped/tests/presets.rs.
+    pub fn g1_v619() -> Self {
+        let mut c = Self::code_defaults(&crate::profile::G1_23DOF);
+        c.wbc.feas_tol = 1e-8;
+        c.wbc.strategy = misa_wbc::HqpStrategy::WeightedQp { level_ratio: 1 };
+        c.wbc.fallback_level = 3;
+        c.wbc.level_weights.set("com", 100.0);
+        c.wbc.level_weights.set("posture", 0.001);
+        c.wbc.ctrl_dt = 0.005;
+        c.joint_limit.enabled = true;
+        c.joint_limit.alpha = [25.6107, 10.0, 20.6833];
+        c.joint_limit.a_max = 351.019;
+        c.gains.kp_com = 419.064;
+        c.gains.kd_com = 48.1952;
+        c.gains.kp_trunk = 73.0103;
+        c.gains.kd_trunk = 28.2069;
+        c.dcm.cop_frac = 0.912835;
+        c.dcm.k_dcm = 3.09069;
+        c.dcm.vh_dcm = true;
+        c.gait.t_ds = 0.365543;
+        c.gait.t_ss = 0.843964;
+        c.gait.n_steps = 28;
+        c.gait.ds_settle = 0.0840506;
+        c.gait.stride = 0.148842;
+        c.gait.stride_ramp = 3; // STRIDE_RAMP=3.15826, read as a whole number of steps
+        c.stair_plan.toe_margin = 0.0;
+        c.stair_plan.y_out = 0.00442314;
+        c.stair_plan.td_bias = 0.000780737;
+        c.stair_plan.td_bias_asc_mid = Some(0.02);
+        c.stair_plan.landing_frac = 0.942684;
+        c.stair_plan.align_stand_line = true;
+        c.descent.td_bias_desc = Some(0.02);
+        c.descent.com_height_lead = 0.5;
+        c.descent.zone_crouch = 0.04;
+        c.descent.land_extend = Some(0.25);
+        c.descent.land_confirm_xy = Some(0.03);
+        c.descent.land_confirm_z = Some(0.003);
+        c.slope.keep_stride = true;
+        c.slope.heel_cut = 0.010;
+        c.slope.terrain_pitch_yaw = true;
+        c.swing.kp = 477.044;
+        c.swing.kd = 31.493;
+        c.swing.lift_h = 0.0512879;
+        c.swing.tracking_cubic_ff = true;
+        c.swing.tracking_ff_min_riser = 0.10;
+        c.swing.td_sole_frame = true;
+        c.arm.hold = true;
+        c.arm.before_swing = true;
+        c.arm.kp = 400.0;
+        c.arm.kd = 40.0;
+        c.arm.mom = true;
+        c.arm.kp_mom = 77.0372;
+        c.arm.mom_ref = "arms_neutral".into();
+        c.arm.mom_arm_dcm = 27.4033;
+        c.mom_cmp.gain = 1.0;
+        c.mom_cmp.max = 20.0;
+        c.mom_cmp.sign = -1.0;
+        c.mom_cmp.hmax = 1.0;
+        c.mom_cmp.kh = 2.0;
+        c.contact.admit_confirmed = true;
+        c.contact.admit_scheduled = true;
+        c.contact.admit_loaded = Some((0.04, 0.02));
+        c.landing.extend = 0.25;
+        c.landing.extend_rise = 1.08;
+        c.landing.speed_xy = 0.0776444;
+        c.landing.speed_z = 0.05;
+        c.com_plan.replan = true;
+        c.contact_plan.on = true;
+        c.contact_plan.max_x = 0.0;
+        c.contact_plan.max_y = 0.0;
+        c.contact_plan.max_y_in = Some(0.0);
+        c.contact_plan.timing_from_x = true;
+        c.contact_plan.timing_lat_outward = true;
+        c.double_support.feasible = true;
+        c.double_support.feasible_on_timeout = true;
+        c.double_support.feasible_continuous = true;
+        c.double_support.feasible_ramp = true;
+        c.double_support.capture = true;
+        c.double_support.capture_margin = 0.005;
+        c.mpc.enabled = true;
+        c.mpc.always = true;
+        c.mpc.apply = true;
+        c.mpc.coupled = false;
+        c.mpc.node_centre = true;
+        c.mpc.net_cop_w = 10.0;
+        c.mpc.seed_previous = 2;
+        c.mpc.w_smooth = 10.0;
+        c.mpc.sole_authority = true;
+        c.mpc.horizon = 8;
+        c.mpc_footstep.on = true;
+        c.mpc_footstep.w = 100.0;
+        c.mpc_footstep.trig = 0.015;
+        c.mpc_footstep.max = [0.15, 0.08];
+        c.mpc_footstep.max_y_in = 0.0;
+        c.mpc_footstep.y_in_fwd = 0.035;
+        c.mpc_footstep.y_in_fwd_trig = 0.005;
+        c.mpc_footstep.capture_w = 1000000.0;
+        c.mpc_footstep.capture_j = true;
+        c.mpc_footstep.lex = true;
+        c.mpc_cross.y = 0.20;
+        c.mpc_cross.ex = 0.03;
+        c.mpc_cross.floor = 0.5;
+        c.mpc_cross.hold_z = 0.05;
+        c.push_replan.trig = 0.03;
+        c.push_replan.back_only = true;
+        c.push_replan.vmax = 0.15;
+        c.push_replan.hold = 10.0; // in effect no hold (see §7 of the extraction plan)
+        c.push_replan.slope_lead = 0.6;
+        c.push_crouch.drop = 0.035;
+        c.speed.z_min = 0.06;
+        c.speed.yield_v = 0.20;
+        c.speed.yield_no_fwd = true;
+        c.speed.yield_vmin = 0.35;
+        c.recovery.trig_dcm = 0.036;
+        c.recovery.trig_max_frac = 0.65;
+        c.recovery.delay_comp = false;
+        c.recovery.reset_incl_current = true;
+        c
+    }
+
+    /// kyo46rs base v2: the code defaults of [`crate::profile::KYO46RS`] with
+    /// the control keys of `log/claude_g1rand_20260925/kyo_base_v2.json`
+    /// (the rest of it is the rig, `T`, the command `VX` and keys no longer
+    /// read). Checked against that file by crates/misa-biped/tests/presets.rs.
+    pub fn kyo46rs_v2() -> Self {
+        let mut c = Self::code_defaults(&crate::profile::KYO46RS);
+        c.wbc.feas_tol = 1e-8;
+        c.wbc.fallback_level = 3;
+        c.wbc.ctrl_dt = 0.005;
+        c.joint_limit.enabled = true;
+        c.joint_limit.a_max = 200.0;
+        c.dcm.k_dcm = 2.0;
+        c.dcm.zmp_roll = Some(0.02107);
+        c.dcm.com_xy_jerk_max = 100.0;
+        c.gait.t_ds = 0.3384;
+        c.gait.t_ss = 0.45;
+        c.gait.n_steps = 40;
+        c.gait.stride_ramp = 6;
+        c.stair_plan.gait_pair = true;
+        c.stair_plan.td_bias = 0.0;
+        c.stair_plan.full_sole = true;
+        c.stair_plan.sole_margin = 0.002;
+        c.swing.kp_xy = Some(400.0);
+        c.swing.lift_h = 0.03;
+        c.swing.rot_mode = 1;
+        c.swing.tracking_cubic_ff = false;
+        c.swing.tracking_ff_scale = 1.0;
+        c.swing.td_sink = 0.009;
+        c.swing.stair_windows = [0.50, 0.38, 0.80, 0.70];
+        c.swing.stair_ff = true;
+        c.swing.absolute_td = false;
+        c.arm.hold = true;
+        c.arm.hold_joints = "shoulder".into();
+        c.arm.kp = 200.0;
+        c.arm.kd = 20.0;
+        c.contact.on_bw = 0.05;
+        c.contact.admit_scheduled = true;
+        c.landing.predict_frac = 1.0;
+        c.landing.extend = 0.10;
+        c.landing.speed_xy = 0.05;
+        c.landing.speed_z = 0.05;
+        c.com_plan.replan = true;
+        c.com_plan.preplan = Some(true);
+        c.com_plan.preplan_xy_min = 0.075;
+        c.com_plan.stair_ss_max = 0.7254;
+        c
     }
 
     /// The landing clock with its knobs set: the confirmation's force gate
