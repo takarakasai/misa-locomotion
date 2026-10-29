@@ -25,6 +25,7 @@
 //! kyo46rs's baseline, and the code's own defaults depend on the machine
 //! ([`Config::code_defaults`] takes the [`Profile`]).
 use crate::plan::DcmParams;
+use crate::preview::LandingTiming;
 use crate::profile::Profile;
 
 /// Every control knob of the walker.
@@ -38,6 +39,14 @@ pub struct Config {
     pub stair_plan: StairPlanConfig,
     pub descent: DescentConfig,
     pub slope: SlopeConfig,
+    pub swing: SwingConfig,
+    pub arm: ArmMomentumConfig,
+    pub mom_cmp: MomCmpConfig,
+    pub contact: ContactConfig,
+    pub managed: ManagedContactConfig,
+    pub landing: LandingConfig,
+    pub com_plan: ComPlanConfig,
+    pub stair_zone: StairZoneConfig,
 }
 
 impl Config {
@@ -135,7 +144,138 @@ impl Config {
                 terrain_pitch: false,
                 terrain_pitch_yaw: false,
             },
+            swing: SwingConfig {
+                kp: prof.kp_swing,
+                kp_xy: None,
+                kd: prof.kd_swing,
+                kp_rot: 400.0,
+                kd_rot: 40.0,
+                lift_h: 0.5 * prof.lift_h,
+                rot_mode: 1,
+                zone_rot_mode: 0,
+                tracking_cubic_ff: false,
+                tracking_ff_min_riser: 0.0,
+                tracking_ff_scale: 1.0,
+                td_sole_frame: false,
+                td_sink: 0.004,
+                land_sink: 0.004,
+                stair_windows: [0.30, 0.25, 0.70, 0.60],
+                stair_ff: false,
+                step_dz_min: 1e-9,
+                absolute_td: false,
+                absolute_td_desc: false,
+                xy_delay: 0.0,
+                z_hold: false,
+                z_hold_min_dur: 0.0,
+                z_drop: [0.60, 0.95],
+            },
+            arm: ArmMomentumConfig {
+                hold: false,
+                hold_joints: "all".into(),
+                before_swing: false,
+                kp: 400.0,
+                kd: 40.0,
+                mom: false,
+                kp_mom: 10.0,
+                mom_axes: [true, false, false],
+                mom_level: "swing_after".into(),
+                mom_ref: "zero".into(),
+                mom_arm_dcm: 0.0,
+                mom_arm_dcm_max: 20.0,
+            },
+            mom_cmp: MomCmpConfig {
+                gain: 0.0,
+                max: 20.0,
+                dead: 0.003,
+                w: 1.0,
+                sign: 1.0,
+                hmax: 0.0,
+                kh: 0.0,
+            },
+            contact: ContactConfig {
+                kp: 150.0,
+                kd: None,
+                anchor_leak: 0.2,
+                driven: true,
+                ticks: 2,
+                on_bw: 0.10,
+                load_ramp_frac: 0.6,
+                admit_confirmed: false,
+                admit_scheduled: false,
+                admit_z: 0.010,
+                admit_loaded: None,
+            },
+            managed: ManagedContactConfig {
+                on: true,
+                tangent: 0.03,
+                rotation: 0.05,
+                az_max: 15.0,
+                rate: 0.0,
+                latch: 0.10,
+            },
+            landing: {
+                let lt = LandingTiming::new(0.0);
+                LandingConfig {
+                    confirm_fz_frac: 0.05,
+                    confirm_xy: lt.xy_tol,
+                    confirm_z: lt.z_tol,
+                    predict_frac: 0.0,
+                    extend: 0.25,
+                    extend_rise: 0.0,
+                    step_dz_min: 0.005,
+                    speed_xy: 0.35,
+                    speed_z: 0.20,
+                    event: ContactEventConfig {
+                        on: false,
+                        z_tol: 0.003,
+                        shift: true,
+                        end_on_touch: true,
+                        probe_speed: 0.05,
+                        probe_max: 0.03,
+                    },
+                }
+            },
+            com_plan: ComPlanConfig {
+                z_com: None,
+                z_com_offset: 0.0,
+                replan: false,
+                preplan: None,
+                preplan_xy_min: f64::INFINITY,
+                stair_ss_max: 0.80,
+                replan_forward_gain: 1.0,
+                replan_dt: 0.02,
+                preview_dt: 0.05,
+                preview_n: 20,
+                preview_smooth: 0.1,
+                height_replan: true,
+                height_time: 0.60,
+                stair_climb_rate: 1.5,
+            },
+            stair_zone: StairZoneConfig { lead: 0.30, tail: 0.60 },
         }
+    }
+
+    /// The landing clock with its knobs set: the confirmation's force gate
+    /// (`LAND_CONFIRM_FZ_FRAC` of m g) and tolerances, the deadline slack and
+    /// arrival speeds, the event-driven contact, and the descent's z
+    /// tolerance. What a swing sets for itself (its xy override, its
+    /// extension) the walker sets every tick.
+    pub fn landing_timing(&self, total_mass: f64, g: f64) -> LandingTiming {
+        let l = &self.landing;
+        let mut lt = LandingTiming::new(l.confirm_fz_frac * total_mass * g);
+        lt.xy_tol = l.confirm_xy;
+        lt.z_tol = l.confirm_z;
+        lt.event_mode = l.event.on;
+        lt.event_z_tol = l.event.z_tol;
+        lt.probe_speed = l.event.probe_speed;
+        lt.probe_max = l.event.probe_max;
+        lt.min_fraction = l.predict_frac;
+        lt.dz_min = l.step_dz_min;
+        lt.z_tol_override = self.descent.land_confirm_z;
+        lt.max_extension = l.extend;
+        lt.speed_z = l.speed_z;
+        lt.speed_xy = l.speed_xy;
+        lt
     }
 }
 
@@ -404,7 +544,8 @@ pub struct DescentConfig {
     /// `STAIR_ZONE_CROUCH` [m] (0..0.15): the CoM lowered in the stair zone.
     pub zone_crouch: f64,
     /// `COM_LAND_EXTEND_DESC` [s] (non-negative): the landing-deadline slack
-    /// of a descending swing. None = `COM_LAND_EXTEND_RISE`.
+    /// of a descending swing. None = `COM_LAND_EXTEND_RISE`
+    /// ([`DescentConfig::land_extend`]).
     pub land_extend: Option<f64>,
     /// `LAND_CONFIRM_XY_DESC`, `LAND_CONFIRM_Z_DESC` [m]: the landing
     /// confirmation's tolerances for descending swings. None = the general ones.
@@ -417,6 +558,10 @@ pub struct DescentConfig {
 impl DescentConfig {
     pub fn td_bias_desc(&self, stair: &StairPlanConfig) -> f64 {
         self.td_bias_desc.unwrap_or(stair.td_bias)
+    }
+
+    pub fn land_extend(&self, landing: &LandingConfig) -> f64 {
+        self.land_extend.unwrap_or(landing.extend_rise)
     }
 }
 
@@ -431,4 +576,227 @@ pub struct SlopeConfig {
     /// `TERRAIN_PITCH`, `TERRAIN_PITCH_YAW`: pitch the swing foot to the surface.
     pub terrain_pitch: bool,
     pub terrain_pitch_yaw: bool,
+}
+
+/// The swing foot: its gains, its apex, its profile on stairs, and the
+/// rough-ground hold (`ROUGH_MODE` sets `LIFT_H` and the three `SWING_*`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SwingConfig {
+    /// `KP_SWING` (z, profile), `KP_SWING_XY` (None = a quarter of z),
+    /// `KD_SWING` (profile).
+    pub kp: f64,
+    pub kp_xy: Option<f64>,
+    pub kd: f64,
+    /// `KP_SWING_ROT`, `KD_SWING_ROT`: the swing foot's orientation.
+    pub kp_rot: f64,
+    pub kd_rot: f64,
+    /// `LIFT_H` [m] (half the profile's).
+    pub lift_h: f64,
+    /// `SWING_ROT` (0 translation, 1 +yaw, 2 full pose, 3 no yaw), and
+    /// `STAIR_ZONE_SWING_ROT` (non-negative) inside a stair zone (0 = the same).
+    pub rot_mode: u32,
+    pub zone_rot_mode: u32,
+    /// `TRACKING_CUBIC_FF`: the cubic profile's acceleration feedforward,
+    /// on stairs whose riser is at least `TRACKING_FF_MIN_RISER` [m]
+    /// (non-negative), scaled by `TRACKING_FF_SCALE`.
+    pub tracking_cubic_ff: bool,
+    pub tracking_ff_min_riser: f64,
+    pub tracking_ff_scale: f64,
+    /// `STAIR_TD_SOLE_FRAME`: command the ankle pose the footstep implies.
+    pub td_sole_frame: bool,
+    /// `STAIR_TD_SINK`, `STAIR_LAND_SINK` (non-negative) [m]: landing
+    /// overdrive below the surface.
+    pub td_sink: f64,
+    pub land_sink: f64,
+    /// `STAIR_SWING_WINDOWS` (four numbers, else the default): rise end,
+    /// travel start, travel end, drop start.
+    pub stair_windows: [f64; 4],
+    /// `STAIR_SWING_FF`.
+    pub stair_ff: bool,
+    /// `STEP_DZ_SWING_MIN` [m] (non-negative): height change above which a
+    /// swing takes the stair profile.
+    pub step_dz_min: f64,
+    /// `STAIR_ABSOLUTE_TD`, `STAIR_ABSOLUTE_TD_DESC`: the surveyed tread
+    /// height as the touchdown target (all swings / descending only).
+    pub absolute_td: bool,
+    pub absolute_td_desc: bool,
+    /// `SWING_XY_DELAY` (0..0.6), `SWING_Z_HOLD`, `SWING_Z_HOLD_MIN_DUR`
+    /// (0..1), `SWING_Z_DROP` ("a,b": 0.3..0.95, 0.5..1).
+    pub xy_delay: f64,
+    pub z_hold: bool,
+    pub z_hold_min_dur: f64,
+    pub z_drop: [f64; 2],
+}
+
+impl SwingConfig {
+    pub fn kp_xy(&self) -> f64 {
+        self.kp_xy.unwrap_or(0.25 * self.kp)
+    }
+}
+
+/// The arms: their hold, and the centroidal angular-momentum task.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArmMomentumConfig {
+    /// `ARM_HOLD`, `ARM_HOLD_JOINTS` (all / elbow / shoulder),
+    /// `ARM_BEFORE_SWING`, `KP_ARM`, `KD_ARM`.
+    pub hold: bool,
+    pub hold_joints: String,
+    pub before_swing: bool,
+    pub kp: f64,
+    pub kd: f64,
+    /// `MOM`, `KP_MOM`, `MOM_AXES` (roll/pitch/yaw mask, "x--"),
+    /// `MOM_LEVEL`, `MOM_REF` (zero / arms_neutral).
+    pub mom: bool,
+    pub kp_mom: f64,
+    pub mom_axes: [bool; 3],
+    pub mom_level: String,
+    pub mom_ref: String,
+    /// `MOM_ARM_DCM`, `MOM_ARM_DCM_MAX` (non-negative): roll momentum asked
+    /// of the arms when the lateral DCM escapes.
+    pub mom_arm_dcm: f64,
+    pub mom_arm_dcm_max: f64,
+}
+
+/// MOM_CMP: the hip strategy written as the centroidal moment pivot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MomCmpConfig {
+    /// `MOM_CMP`, `MOM_CMP_MAX`, `MOM_CMP_DEAD`, `MOM_CMP_W`, `MOM_CMP_HMAX`,
+    /// `MOM_CMP_KH` (all non-negative), `MOM_CMP_SIGN`. 0 gain = off.
+    pub gain: f64,
+    pub max: f64,
+    pub dead: f64,
+    pub w: f64,
+    pub sign: f64,
+    pub hmax: f64,
+    pub kh: f64,
+}
+
+/// The contact model, the measured contact set and the load ramp.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContactConfig {
+    /// `KP_CONTACT`, `KD_CONTACT` (None = 2 sqrt(kp)): the contact stabiliser.
+    pub kp: f64,
+    pub kd: Option<f64>,
+    /// `ANCHOR_LEAK`.
+    pub anchor_leak: f64,
+    /// `CONTACT_DRIVEN`, `CONTACT_TICKS`, `CONTACT_ON_BW` (checked by the
+    /// harness): solve against the contact set the feet report.
+    pub driven: bool,
+    pub ticks: u32,
+    pub on_bw: f64,
+    /// `LOAD_RAMP_FRAC` (0.05..1).
+    pub load_ramp_frac: f64,
+    /// `CONTACT_ADMIT_CONFIRMED`, `CONTACT_ADMIT_SCHEDULED`,
+    /// `CONTACT_ADMIT_Z` (non-negative), `CONTACT_ADMIT_LOADED`
+    /// ("z_tol,fz_frac", both non-negative).
+    pub admit_confirmed: bool,
+    pub admit_scheduled: bool,
+    pub admit_z: f64,
+    pub admit_loaded: Option<(f64, f64)>,
+}
+
+impl ContactConfig {
+    pub fn kd(&self) -> f64 {
+        self.kd.unwrap_or(2.0 * self.kp.sqrt())
+    }
+}
+
+/// Managed (soft) contact on a stair landing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ManagedContactConfig {
+    /// `STAIR_MANAGED_CONTACT`, `_TANGENT` (0..1), `_ROTATION` (0..1),
+    /// `_AZ_MAX` (at least 0.1), `_RATE`, `_LATCH` (non-negative).
+    pub on: bool,
+    pub tangent: f64,
+    pub rotation: f64,
+    pub az_max: f64,
+    pub rate: f64,
+    pub latch: f64,
+}
+
+/// The landing clock (`LandingTiming`; see [`Config::landing_timing`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LandingConfig {
+    /// `LAND_CONFIRM_FZ_FRAC` (non-negative): the confirmation's force gate
+    /// in body weights, `LAND_CONFIRM_XY`, `LAND_CONFIRM_Z` [m].
+    pub confirm_fz_frac: f64,
+    pub confirm_xy: f64,
+    pub confirm_z: f64,
+    /// `COM_LAND_PREDICT_FRAC` (0..1).
+    pub predict_frac: f64,
+    /// `COM_LAND_EXTEND`, `COM_LAND_EXTEND_RISE` [s] (non-negative).
+    pub extend: f64,
+    pub extend_rise: f64,
+    /// `STEP_DZ_MIN` [m] (non-negative): height change above which a swing
+    /// is a stair swing.
+    pub step_dz_min: f64,
+    /// `COM_LAND_VXY`, `COM_LAND_VZ` [m/s] (at least 0.01): the swing speeds
+    /// the clock and `COM_PREPLAN` assume.
+    pub speed_xy: f64,
+    pub speed_z: f64,
+    pub event: ContactEventConfig,
+}
+
+/// Event-driven contact.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContactEventConfig {
+    /// `CONTACT_EVENT`, `CONTACT_EVENT_Z` [m], `CONTACT_EVENT_SHIFT`,
+    /// `CONTACT_EVENT_END_ON_TOUCH`, `CONTACT_PROBE_VZ` [m/s],
+    /// `CONTACT_PROBE_MAX` [m] (the numbers non-negative).
+    pub on: bool,
+    pub z_tol: f64,
+    pub shift: bool,
+    pub end_on_touch: bool,
+    pub probe_speed: f64,
+    pub probe_max: f64,
+}
+
+/// The CoM: its height, the swing time reserved ahead, and the preview.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComPlanConfig {
+    /// `Z_COM` [m, world]. None = the initial CoM height + `Z_COM_OFFSET`
+    /// ([`ComPlanConfig::z_com`]).
+    pub z_com: Option<f64>,
+    pub z_com_offset: f64,
+    /// `COM_REPLAN`, and `COM_PREPLAN` (None = `COM_REPLAN`).
+    pub replan: bool,
+    pub preplan: Option<bool>,
+    /// `COM_PREPLAN_XY_MIN` [m], `COM_STAIR_SS_MAX` [s] (at least `T_SS`, at
+    /// the use).
+    pub preplan_xy_min: f64,
+    pub stair_ss_max: f64,
+    /// `COM_REPLAN_FORWARD_GAIN` (0..1; checked by the harness).
+    pub replan_forward_gain: f64,
+    /// `COM_REPLAN_DT`, `COM_PREVIEW_DT` [s] (at least the control period,
+    /// at the use), `COM_PREVIEW_N` (at least 2), `COM_PREVIEW_SMOOTH`
+    /// (non-negative).
+    pub replan_dt: f64,
+    pub preview_dt: f64,
+    pub preview_n: usize,
+    pub preview_smooth: f64,
+    /// `COM_HEIGHT_REPLAN`, `COM_HEIGHT_TIME` [s] (at least 0.10).
+    pub height_replan: bool,
+    pub height_time: f64,
+    /// `STAIR_CLIMB_RATE` [risers per step].
+    pub stair_climb_rate: f64,
+}
+
+impl ComPlanConfig {
+    pub fn z_com(&self, com0_z: f64) -> f64 {
+        self.z_com.unwrap_or(com0_z + self.z_com_offset)
+    }
+
+    pub fn preplan(&self) -> bool {
+        self.preplan.unwrap_or(self.replan)
+    }
+}
+
+/// The stair zone: mid-feet x from `start - lead` to `landing_start + tail`
+/// (shared by the zone crouch, MOM_CMP's stair exclusion, PUSH_REPLAN and the
+/// zone swing mode).
+#[derive(Clone, Debug, PartialEq)]
+pub struct StairZoneConfig {
+    /// `STAIR_ZONE_CROUCH_LEAD`, `STAIR_ZONE_CROUCH_TAIL` [m] (non-negative).
+    pub lead: f64,
+    pub tail: f64,
 }
