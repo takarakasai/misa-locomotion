@@ -47,6 +47,16 @@ pub struct Config {
     pub landing: LandingConfig,
     pub com_plan: ComPlanConfig,
     pub stair_zone: StairZoneConfig,
+    pub contact_plan: ContactPlanConfig,
+    pub double_support: DoubleSupportConfig,
+    pub mpc: WrenchMpcConfig,
+    pub mpc_footstep: MpcFootstepConfig,
+    pub mpc_cross: MpcCrossConfig,
+    pub push_replan: PushReplanConfig,
+    pub push_crouch: PushCrouchConfig,
+    pub speed: SpeedScheduleConfig,
+    pub recovery: RecoveryRefConfig,
+    pub debug: DebugFlags,
 }
 
 impl Config {
@@ -252,6 +262,120 @@ impl Config {
                 stair_climb_rate: 1.5,
             },
             stair_zone: StairZoneConfig { lead: 0.30, tail: 0.60 },
+            contact_plan: ContactPlanConfig {
+                on: false,
+                trig: 0.015,
+                t_min_frac: 0.5,
+                t_max_frac: 1.0,
+                dt_grid: 0.01,
+                max_x: 0.06,
+                max_y: 0.03,
+                max_y_in: None,
+                timing_from_x: false,
+                timing_lat_outward: false,
+                j: 0.5,
+                w_shift: 0.0,
+                w_u: 1.0,
+                w_t: 1.0,
+                w_res: 100.0,
+                dead_u: 0.002,
+                dead_t: 0.005,
+            },
+            double_support: DoubleSupportConfig {
+                feasible: false,
+                feasible_on_timeout: false,
+                feasible_continuous: false,
+                feasible_ramp: false,
+                feasible_max: 1.5,
+                feasible_box_stance: false,
+                capture: false,
+                capture_hopeless: 1.5,
+                capture_min_gain: 0.05,
+                capture_fwd_only: true,
+                capture_margin: 0.01,
+                capture_t_min: 0.15,
+                capture_load: 0.4,
+            },
+            mpc: WrenchMpcConfig {
+                enabled: false,
+                always: false,
+                apply: false,
+                coupled: true,
+                node_centre: false,
+                net_cop_w: 0.0,
+                seed_previous: 0,
+                w_pos: 20.0,
+                w_vel: 4.0,
+                w_mom: 2.0,
+                w_acc: 6.0,
+                w_wrench: 2e-4,
+                w_smooth: 1e-3,
+                sole_authority: false,
+                dt: 0.02,
+                horizon: 8,
+                preview_dt: 0.05,
+                low_min: 0.12,
+                blend: 0.25,
+                hybrid_contact: true,
+                backend: None,
+                kkt_comp_tol: 1e-6,
+                bench_gate: false,
+            },
+            mpc_footstep: MpcFootstepConfig {
+                on: false,
+                w: 100.0,
+                moment: true,
+                trig: 0.0,
+                max: [0.06, 0.03],
+                max_y_in: f64::INFINITY,
+                y_in_fwd: 0.0,
+                y_in_fwd_trig: 0.005,
+                capture_w: 0.0,
+                capture_j: false,
+                lex: false,
+            },
+            mpc_cross: MpcCrossConfig { y: 0.0, ex: 0.02, floor: 0.0, hold_z: 0.0, hold_xy: 0.02 },
+            push_replan: PushReplanConfig {
+                trig: 0.0,
+                emin: 0.015,
+                freeze: 0.85,
+                stand: 2,
+                ramp: 2,
+                max_fwd: 0.35,
+                max_back: 0.30,
+                min_w: 0.12,
+                max_w: 0.40,
+                hold: 0.06,
+                back_only: false,
+                vmax: f64::INFINITY,
+                ankle: [0.0, 1.0],
+                slope_lead: 0.0,
+            },
+            push_crouch: PushCrouchConfig { drop: 0.0, trig: 0.03, t: 1.5, lat_max: 0.02 },
+            speed: SpeedScheduleConfig {
+                sched: false,
+                tscale_min: 0.4,
+                stride_max: 0.45,
+                cap_slope: 2.0,
+                v_long: 0.45,
+                z_slope: 0.36,
+                z_max: 0.08,
+                z_min: 0.0,
+                yield_v: 0.0,
+                yield_trig: 0.03,
+                yield_no_fwd: false,
+                yield_vmin: 0.0,
+            },
+            recovery: RecoveryRefConfig {
+                trig_dcm: 0.0,
+                trig_max_frac: 1.0,
+                delay_comp: true,
+                swing: true,
+                reset_stance: true,
+                reset_incl_current: false,
+                cooldown: 1.0,
+            },
+            debug: DebugFlags::default(),
         }
     }
 
@@ -799,4 +923,277 @@ pub struct StairZoneConfig {
     /// `STAIR_ZONE_CROUCH_LEAD`, `STAIR_ZONE_CROUCH_TAIL` [m] (non-negative).
     pub lead: f64,
     pub tail: f64,
+}
+
+/// The contact planner (P2-1, `contact_plan`): when the current single
+/// support ends and where it lands, once the DCM is off the plan.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContactPlanConfig {
+    /// `CONTACT_PLAN`, and `CP_TRIG` [m]: plan only above this DCM error.
+    pub on: bool,
+    pub trig: f64,
+    /// `CP_T_MIN`, `CP_T_MAX` (1 = never extend the single support),
+    /// `CP_DT` (at least 1 ms).
+    pub t_min_frac: f64,
+    pub t_max_frac: f64,
+    pub dt_grid: f64,
+    /// `CP_MAX_X`, `CP_MAX_Y`, `CP_MAX_Y_IN` (None = `CP_MAX_Y`). All three
+    /// zero make the planner a pure step-retimer.
+    pub max_x: f64,
+    pub max_y: f64,
+    pub max_y_in: Option<f64>,
+    /// `CP_T_FROM_X`, `CP_T_LAT_OUT`.
+    pub timing_from_x: bool,
+    pub timing_lat_outward: bool,
+    /// `CP_J` (at least 0.05), `CP_W_SHIFT` (non-negative), `CP_W_U`,
+    /// `CP_W_T`, `CP_W_RES`, `CP_DEAD_U`, `CP_DEAD_T`.
+    pub j: f64,
+    pub w_shift: f64,
+    pub w_u: f64,
+    pub w_t: f64,
+    pub w_res: f64,
+    pub dead_u: f64,
+    pub dead_t: f64,
+}
+
+impl ContactPlanConfig {
+    /// The planner's own tunables.
+    pub fn planner(&self) -> crate::contact_plan::Config {
+        crate::contact_plan::Config {
+            t_min_frac: self.t_min_frac,
+            t_max_frac: self.t_max_frac,
+            dt_grid: self.dt_grid,
+            max_x: self.max_x,
+            max_y: self.max_y,
+            max_y_in: self.max_y_in.unwrap_or(self.max_y),
+            timing_from_x: self.timing_from_x,
+            timing_lat_outward: self.timing_lat_outward,
+            j: self.j,
+            w_shift: self.w_shift,
+            w_u: self.w_u,
+            w_t: self.w_t,
+            w_res: self.w_res,
+            dead_u: self.dead_u,
+            dead_t: self.dead_t,
+        }
+    }
+}
+
+/// The double support after a landing: DS_FEASIBLE sizes it from the
+/// measured DCM, DS_CAPTURE ends it early when the DCM has left its box.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DoubleSupportConfig {
+    /// `DS_FEASIBLE`, `DS_FEASIBLE_ON_TIMEOUT`, `DS_FEASIBLE_CONTINUOUS`,
+    /// `DS_FEASIBLE_RAMP`, `DS_FEASIBLE_MAX` [s], `DS_FEASIBLE_BOX=stance`
+    /// (the old stance sole as the pivot box).
+    pub feasible: bool,
+    pub feasible_on_timeout: bool,
+    pub feasible_continuous: bool,
+    pub feasible_ramp: bool,
+    pub feasible_max: f64,
+    pub feasible_box_stance: bool,
+    /// `DS_CAPTURE`, `_HOPELESS` (at least 1), `_MIN_GAIN` [s]
+    /// (non-negative), `_FWD_ONLY`, `_MARGIN` [m], `_T_MIN` [s] (at least
+    /// 0.02), `_LOAD` (0..1).
+    pub capture: bool,
+    pub capture_hopeless: f64,
+    pub capture_min_gain: f64,
+    pub capture_fwd_only: bool,
+    pub capture_margin: f64,
+    pub capture_t_min: f64,
+    pub capture_load: f64,
+}
+
+/// The per-foot wrench MPC.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WrenchMpcConfig {
+    /// `STAIR_WRENCH_MPC`, `WRENCH_MPC_ALWAYS`, `WRENCH_MPC_APPLY` (only with
+    /// ALWAYS: [`WrenchMpcConfig::applies`]), `STAIR_WRENCH_COUPLED`.
+    pub enabled: bool,
+    pub always: bool,
+    pub apply: bool,
+    pub coupled: bool,
+    /// `MPC_NODE_CENTRE`, `MPC_NET_COP_W` (non-negative),
+    /// `MPC_SEED_PREVIOUS` (0 off, 1 seed the first solve, 2 every solve).
+    pub node_centre: bool,
+    pub net_cop_w: f64,
+    pub seed_previous: i32,
+    /// `MPC_W_POS`, `_VEL`, `_MOM`, `_ACC`, `_WRENCH`, `_SMOOTH` (non-negative).
+    pub w_pos: f64,
+    pub w_vel: f64,
+    pub w_mom: f64,
+    pub w_acc: f64,
+    pub w_wrench: f64,
+    pub w_smooth: f64,
+    /// `MPC_SOLE_AUTHORITY`.
+    pub sole_authority: bool,
+    /// `STAIR_WRENCH_DT`, `STAIR_WRENCH_PREVIEW_DT` [s] (at least the control
+    /// period, at the use), `STAIR_WRENCH_N` (at least 2),
+    /// `STAIR_WRENCH_LOW_MIN` (0..0.45), `STAIR_WRENCH_BLEND` (0..1).
+    pub dt: f64,
+    pub horizon: usize,
+    pub preview_dt: f64,
+    pub low_min: f64,
+    pub blend: f64,
+    /// `STAIR_HYBRID_CONTACT`: the measured contact set in the horizon and WBC.
+    pub hybrid_contact: bool,
+    /// `MPC_QP_BACKEND`, `MPC_KKT_COMP_TOL`, `MPC_BENCH_GATE`.
+    pub backend: Option<misa_wbc::QpSolver>,
+    pub kkt_comp_tol: f64,
+    pub bench_gate: bool,
+}
+
+impl WrenchMpcConfig {
+    /// Whether the MPC's answer reaches the WBC outside a stair transfer
+    /// (`WRENCH_MPC_APPLY` counts only with `WRENCH_MPC_ALWAYS`).
+    pub fn applies(&self) -> bool {
+        self.apply && self.always
+    }
+}
+
+/// MPC_FOOTSTEP: the swing foot's landing as a variable of the wrench MPC.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MpcFootstepConfig {
+    /// `MPC_FOOTSTEP`, `MPC_FOOTSTEP_W`, `MPC_FOOTSTEP_MOMENT`,
+    /// `MPC_FOOTSTEP_TRIG` [m] (the numbers non-negative).
+    pub on: bool,
+    pub w: f64,
+    pub moment: bool,
+    pub trig: f64,
+    /// `MPC_FOOTSTEP_MAX_X`, `_MAX_Y`, `_MAX_Y_IN` [m] (non-negative).
+    pub max: [f64; 2],
+    pub max_y_in: f64,
+    /// `MPC_FOOTSTEP_Y_IN_FWD` [m] (non-negative) while the sagittal DCM
+    /// error is forward by `MPC_FOOTSTEP_Y_IN_FWD_TRIG`.
+    pub y_in_fwd: f64,
+    pub y_in_fwd_trig: f64,
+    /// `MPC_LANDING_CAPTURE_W` (non-negative), `MPC_LANDING_CAPTURE_J`,
+    /// `MPC_LANDING_LEX`.
+    pub capture_w: f64,
+    pub capture_j: bool,
+    pub lex: bool,
+}
+
+/// The MPC landing crossing the stance foot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MpcCrossConfig {
+    /// `MPC_FOOTSTEP_CROSS_Y`, `_EX`, `_FLOOR`, `_HOLD_Z`, `_HOLD_XY` (all
+    /// but `_EX` non-negative). 0 `y` = off.
+    pub y: f64,
+    pub ex: f64,
+    pub floor: f64,
+    pub hold_z: f64,
+    pub hold_xy: f64,
+}
+
+/// PUSH_REPLAN: one re-planner for the step after a push.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PushReplanConfig {
+    /// `PUSH_REPLAN` [m] (0 = off), `PUSH_REPLAN_EMIN`, `PUSH_REPLAN_FREEZE`.
+    pub trig: f64,
+    pub emin: f64,
+    pub freeze: f64,
+    /// `PUSH_REPLAN_STAND`, `PUSH_REPLAN_RAMP` [steps].
+    pub stand: usize,
+    pub ramp: usize,
+    /// `PUSH_REPLAN_MAX_FWD`, `_MAX_BACK`, `_MIN_W`, `_MAX_W`, `_HOLD` [m]
+    /// (non-negative).
+    pub max_fwd: f64,
+    pub max_back: f64,
+    pub min_w: f64,
+    pub max_w: f64,
+    pub hold: f64,
+    /// `PUSH_REPLAN_BACK_ONLY`, `PUSH_REPLAN_VMAX` [m/s] (non-negative).
+    pub back_only: bool,
+    pub vmax: f64,
+    /// `PUSH_REPLAN_ANKLE` ("ax,ay", each 0..1).
+    pub ankle: [f64; 2],
+    /// `PUSH_REPLAN_SLOPE_LEAD` [m] (non-negative).
+    pub slope_lead: f64,
+}
+
+/// PUSH_Z_DROP: lower the CoM after a detected push.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PushCrouchConfig {
+    /// `PUSH_Z_DROP` [m] (0 = off), `_TRIG` [m], `_T` [s], `_LAT_MAX` [m]
+    /// (all non-negative).
+    pub drop: f64,
+    pub trig: f64,
+    pub t: f64,
+    pub lat_max: f64,
+}
+
+/// The speed schedule under a `VX2` command, and PUSH_YIELD.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpeedScheduleConfig {
+    /// `VX2_SCHED`, `VX2_TSCALE_MIN` (0.1..1).
+    pub sched: bool,
+    pub tscale_min: f64,
+    /// `VXS_STRIDE_MAX` (at least 0.05), `VXS_CAP_SLOPE`, `VXS_V_LONG`:
+    /// [`SpeedScheduleConfig::stride_cap`].
+    pub stride_max: f64,
+    pub cap_slope: f64,
+    pub v_long: f64,
+    /// `VXS_Z_SLOPE` (non-negative), `VXS_Z_MAX`, `VXS_Z_MIN` (non-negative):
+    /// the scheduled CoM drop.
+    pub z_slope: f64,
+    pub z_max: f64,
+    pub z_min: f64,
+    /// `PUSH_YIELD_V`, `_TRIG`, `_VMIN` (non-negative), `_NO_FWD`.
+    pub yield_v: f64,
+    pub yield_trig: f64,
+    pub yield_no_fwd: bool,
+    pub yield_vmin: f64,
+}
+
+impl SpeedScheduleConfig {
+    /// The stride cap at speed `v`: 0.35 m up to `v_long`, then rising by
+    /// `cap_slope` per m/s to `stride_max`.
+    pub fn stride_cap(&self, v: f64) -> f64 {
+        (0.35 + self.cap_slope * (v - self.v_long)).clamp(0.35, self.stride_max)
+    }
+}
+
+/// Push-recovery references (the library itself is the harness's to load).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecoveryRefConfig {
+    /// `REF_TRIG_DCM` [m] (non-negative; 0 = off), `REF_TRIG_MAX_FRAC`,
+    /// `REF_DELAY_COMP`.
+    pub trig_dcm: f64,
+    pub trig_max_frac: f64,
+    pub delay_comp: bool,
+    /// `REF_SWING`, `REF_RESET_STANCE`, `REF_RESET_INCL_CURRENT`,
+    /// `REF_COOLDOWN` [s] (non-negative).
+    pub swing: bool,
+    pub reset_stance: bool,
+    pub reset_incl_current: bool,
+    pub cooldown: f64,
+}
+
+/// The control loop's debug prints. All off by default.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DebugFlags {
+    /// `CONTACT_ADMIT_DEBUG` (set): the `[adm]` lines (admit certificates).
+    pub contact_admit: bool,
+    /// `DS_FEASIBLE_DEBUG` (set): the `[ds]`/`[dsf]` lines.
+    pub ds_feasible: bool,
+    /// `DS_CAPTURE_DEBUG` (set): the `[dsc-cap]` lines.
+    pub ds_capture: bool,
+    /// `DEBUG_ANCHOR` (a switch: "0" = off): the `[anchor]` lines.
+    pub anchor: bool,
+    /// `CP_DEBUG` (set): the `[cp]` lines (contact_plan).
+    pub cp: bool,
+    /// `PUSH_REPLAN_DEBUG` (set): the `[replan]` lines.
+    pub push_replan: bool,
+    /// `MPC_FS_CROSS_DEBUG` (set): the `[fs-cross]` lines (the crossing gate).
+    pub mpc_fs_cross: bool,
+    /// `MPC_FS_DEBUG_LANDING` (set): the `[fs-decision]` lines.
+    pub mpc_fs_landing: bool,
+    /// `MPC_TRAJ_DEBUG` (set): the `[traj]` lines (before t = 2 s).
+    pub mpc_traj: bool,
+    /// `DIAG_REPLAN` (a switch): print each live replan with its site.
+    pub replan: bool,
+    /// `WBC_LEVEL_DEBUG_T=<t>`: the `[wbc-levels]` lines within 11 ms of t.
+    /// Unparsable = None (silently off).
+    pub wbc_level_t: Option<f64>,
 }
