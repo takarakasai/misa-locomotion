@@ -16,6 +16,8 @@
 //! - [`plan`]         -- the walker's plan in one place (schedule, footsteps,
 //!   DCM, height, landing clock) and its DCM rebuild.
 //! - [`recovery`]     -- push-recovery references (trajopt) and their world frame.
+//! - [`config`]       -- every control knob of the walker, with the code's
+//!   defaults (the harness maps its environment onto it).
 
 pub mod profile;
 pub mod gait;
@@ -27,5 +29,6 @@ pub mod terrain;
 pub mod height;
 pub mod plan;
 pub mod recovery;
+pub mod config;
 
 pub use profile::Profile;
