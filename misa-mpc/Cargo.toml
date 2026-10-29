@@ -1,0 +1,14 @@
+[package]
+name = "misa-mpc"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Centroidal (single-rigid-body) wrench MPC for legged robots, on misa-wbc's QP layer"
+
+[dependencies]
+misa-wbc = { git = "https://github.com/takarakasai/misa-wbc.git" }
+nalgebra = "0.34.2"
+
+[features]
+# HPIPM's structured OCP solve for the wrench MPC (see `wrench_mpc::Config`).
+qp-hpipm = ["misa-wbc/hpipm"]

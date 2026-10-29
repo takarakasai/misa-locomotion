@@ -1,0 +1,11 @@
+[package]
+name = "misa-biped"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Biped gait planning: footsteps, DCM reference, preview control, contact planning"
+
+[dependencies]
+misarta = { git = "https://github.com/takarakasai/misarta.git" }
+misa-wbc = { git = "https://github.com/takarakasai/misa-wbc.git" }
+nalgebra = "0.34.2"
