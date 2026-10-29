@@ -13,6 +13,8 @@
 //! - [`reach`]        -- leg-reach limits on the landing.
 //! - [`terrain`]      -- the known-terrain description (stairs, slopes).
 //! - [`height`]       -- CoM height reference over that terrain.
+//! - [`plan`]         -- the walker's plan in one place (schedule, footsteps,
+//!   DCM, height, landing clock) and its DCM rebuild.
 
 pub mod profile;
 pub mod gait;
@@ -22,5 +24,6 @@ pub mod contact_plan;
 pub mod reach;
 pub mod terrain;
 pub mod height;
+pub mod plan;
 
 pub use profile::Profile;
