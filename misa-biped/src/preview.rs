@@ -422,11 +422,16 @@ pub struct LandingTiming {
     /// swing (confirmed landing, extension). 0.005 = the shipped test; a
     /// slope sets it higher so its 10-15 mm steps stay level steps.
     pub dz_min: f64,
+    /// The confirmation's tolerances [m]: the sole must be within `xy_tol`
+    /// of its planned landing horizontally and `z_tol` vertically. 0.012 /
+    /// 0.010 by default; see `update` for the measurement behind them.
+    pub xy_tol: f64,
+    pub z_tol: f64,
     /// Per-swing override of the confirmation's xy tolerance (the caller
-    /// sets it for the swing in progress). `None` = `LAND_CONFIRM_XY`.
+    /// sets it for the swing in progress). `None` = `xy_tol`.
     pub xy_tol_override: Option<f64>,
     /// z tolerance that goes with `xy_tol_override` (applied only while that
-    /// override is set). `None` = `LAND_CONFIRM_Z`.
+    /// override is set). `None` = `z_tol`.
     pub z_tol_override: Option<f64>,
     /// Per-swing override of the confirmation's force gate [N] (the caller
     /// sets it for the swing in progress). `None` = the constructor's value.
@@ -499,6 +504,8 @@ impl LandingTiming {
         Self {
             dz_min: 0.005,
             max_extension: 0.25,
+            xy_tol: 0.012,
+            z_tol: 0.010,
             xy_tol_override: None,
             z_tol_override: None,
             load_threshold_override: None,
@@ -579,16 +586,15 @@ impl LandingTiming {
         // landing that misses the gate is never confirmed, the foot rests on
         // the tread UNLOADED (fz ~ 0 while the sole sits at tread height), the
         // stance leg is held for another 2-3 s and the lateral DCM escapes.
-        // The tolerances are the discriminator, so they are knobs; defaults
+        // The tolerances are the discriminator, so they are fields; defaults
         // reproduce the constants.
         if self.event_mode {
             return self.update_event(gait, i, sw, error, fz[sw], start, duration, confirm_fraction, t, dt);
         }
-        let xy_tol: f64 = std::env::var("LAND_CONFIRM_XY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.012);
-        let z_tol: f64 = std::env::var("LAND_CONFIRM_Z").ok().and_then(|v| v.parse().ok()).unwrap_or(0.010);
+        let xy_tol = self.xy_tol;
         let z_tol = match (self.xy_tol_override, self.z_tol_override) {
             (Some(_), Some(z)) => z,
-            _ => z_tol,
+            _ => self.z_tol,
         };
         let landed = t >= start + duration * confirm_fraction
             && fz[sw] > self.load_threshold_override.unwrap_or(self.load_threshold)
