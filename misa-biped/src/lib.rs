@@ -24,6 +24,8 @@
 //! - [`wbc`]          -- the seam to the whole-body QP: the request the walker
 //!   makes each tick, the solution, and the `WbcStack` trait a stack of QP
 //!   levels implements.
+//! - [`sink`]         -- where the walker's output goes: its log lines
+//!   (`LogSink`) and its opt-in diagnostic records (`WalkerDiag`).
 
 pub mod profile;
 pub mod gait;
@@ -38,5 +40,6 @@ pub mod recovery;
 pub mod config;
 pub mod robot;
 pub mod wbc;
+pub mod sink;
 
 pub use profile::Profile;

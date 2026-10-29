@@ -498,6 +498,9 @@ pub struct LandingTiming {
     /// xy). The caller moves the plan onto the foot (`shift_next`).
     pub last_load_confirm: Option<(usize, usize, na::Vector2<f64>)>,
     pub load_confirm_count: u32,
+    /// `LAND_TIMING_DEBUG` (set): the `[lt]` lines (activation, confirm,
+    /// timeout, event, end, probe), to the `out` of `update`.
+    pub debug: bool,
 }
 impl LandingTiming {
     pub fn new(load_threshold: f64) -> Self {
@@ -537,6 +540,7 @@ impl LandingTiming {
             load_confirmations: 0,
             last_load_confirm: None,
             load_confirm_count: 0,
+            debug: false,
         }
     }
     pub fn update(
@@ -547,6 +551,7 @@ impl LandingTiming {
         fz: [f64; 2],
         t: f64,
         dt: f64,
+        out: &mut dyn crate::sink::LogSink,
     ) -> f64 {
         if self.active.is_none() {
             let i = gait.index_at(t);
@@ -555,8 +560,8 @@ impl LandingTiming {
                     let from = feet.at_slice(i.saturating_sub(1)).sole[sw].z;
                     if self.level_steps || (feet.at_slice(i).sole[sw].z - from).abs() > self.dz_min {
                         let sl = gait.slices[i];
-                        if std::env::var("LAND_TIMING_DEBUG").is_ok() {
-                            println!("  [lt] t={t:.3} activate slice={i} sw={sw} z {from:.3} -> {:.3} t0={:.3} dur={:.3}", feet.at_slice(i).sole[sw].z, sl.t0, sl.duration());
+                        if self.debug {
+                            crate::outln!(out, "  [lt] t={t:.3} activate slice={i} sw={sw} z {from:.3} -> {:.3} t0={:.3} dur={:.3}", feet.at_slice(i).sole[sw].z, sl.t0, sl.duration());
                         }
                         self.active = Some(i);
                         self.probe_depth = 0.0;
@@ -589,7 +594,7 @@ impl LandingTiming {
         // The tolerances are the discriminator, so they are fields; defaults
         // reproduce the constants.
         if self.event_mode {
-            return self.update_event(gait, i, sw, error, fz[sw], start, duration, confirm_fraction, t, dt);
+            return self.update_event(gait, i, sw, error, fz[sw], start, duration, confirm_fraction, t, dt, out);
         }
         let xy_tol = self.xy_tol;
         let z_tol = match (self.xy_tol_override, self.z_tol_override) {
@@ -610,8 +615,8 @@ impl LandingTiming {
             && error.z.abs() < z_tol;
         self.confirmations = if landed { self.confirmations + 1 } else { 0 };
         if self.confirmations >= 2 {
-            if std::env::var("LAND_TIMING_DEBUG").is_ok() {
-                println!("  [lt] t={t:.3} CONFIRM slice={i} sw={sw} fz={:.0} err=({:+.3},{:+.3},{:+.3})", fz[sw], error.x, error.y, error.z);
+            if self.debug {
+                crate::outln!(out, "  [lt] t={t:.3} CONFIRM slice={i} sw={sw} fz={:.0} err=({:+.3},{:+.3},{:+.3})", fz[sw], error.x, error.y, error.z);
             }
             self.active = None;
             self.finished = Some(i);
@@ -634,8 +639,8 @@ impl LandingTiming {
         }
         let deadline = start + duration + self.max_extension;
         if t >= deadline - 1e-9 {
-            if std::env::var("LAND_TIMING_DEBUG").is_ok() {
-                println!("  [lt] t={t:.3} TIMEOUT slice={i} sw={sw} fz={:.0} err=({:+.3},{:+.3},{:+.3}) ext={:.3}", fz[sw], error.x, error.y, error.z, self.max_extension);
+            if self.debug {
+                crate::outln!(out, "  [lt] t={t:.3} TIMEOUT slice={i} sw={sw} fz={:.0} err=({:+.3},{:+.3},{:+.3}) ext={:.3}", fz[sw], error.x, error.y, error.z, self.max_extension);
             }
             self.timeouts += 1;
             self.active = None;
@@ -673,8 +678,9 @@ impl LandingTiming {
         confirm_fraction: f64,
         t: f64,
         dt: f64,
+        out: &mut dyn crate::sink::LogSink,
     ) -> f64 {
-        let debug = std::env::var("LAND_TIMING_DEBUG").is_ok();
+        let debug = self.debug;
         let deadline = start + duration + self.max_extension;
         let touching = t >= start + duration * confirm_fraction
             && fz > self.load_threshold_override.unwrap_or(self.load_threshold)
@@ -689,13 +695,13 @@ impl LandingTiming {
             self.last_event = Some((i, sw, error.xy()));
             self.events += 1;
             if debug {
-                println!("  [lt] t={t:.3} EVENT slice={i} sw={sw} fz={fz:.0} err=({:+.3},{:+.3},{:+.3}) probe={:.3}", error.x, error.y, error.z, self.probe_depth);
+                crate::outln!(out, "  [lt] t={t:.3} EVENT slice={i} sw={sw} fz={fz:.0} err=({:+.3},{:+.3},{:+.3}) probe={:.3}", error.x, error.y, error.z, self.probe_depth);
             }
         }
         let evented = self.event_slice == Some(i);
         if evented && (self.event_end_on_touch || t >= deadline - 1e-9) {
             if debug {
-                println!("  [lt] t={t:.3} END slice={i} sw={sw} (event, {})", if t >= deadline - 1e-9 { "dwell over" } else { "on touch" });
+                crate::outln!(out, "  [lt] t={t:.3} END slice={i} sw={sw} (event, {})", if t >= deadline - 1e-9 { "dwell over" } else { "on touch" });
             }
             self.active = None;
             self.finished = Some(i);
@@ -724,7 +730,7 @@ impl LandingTiming {
             let depth = self.probe_depth + self.probe_speed * dt;
             if depth > self.probe_max && t >= deadline - 1e-9 {
                 if debug {
-                    println!("  [lt] t={t:.3} TIMEOUT slice={i} sw={sw} fz={fz:.0} err=({:+.3},{:+.3},{:+.3}) after probe {:.3}", error.x, error.y, error.z, self.probe_depth);
+                    crate::outln!(out, "  [lt] t={t:.3} TIMEOUT slice={i} sw={sw} fz={fz:.0} err=({:+.3},{:+.3},{:+.3}) after probe {:.3}", error.x, error.y, error.z, self.probe_depth);
                 }
                 self.timeouts += 1;
                 self.active = None;
@@ -735,7 +741,7 @@ impl LandingTiming {
             if self.probe_depth == 0.0 {
                 self.probes += 1;
                 if debug {
-                    println!("  [lt] t={t:.3} PROBE slice={i} sw={sw} fz={fz:.0} err=({:+.3},{:+.3},{:+.3})", error.x, error.y, error.z);
+                    crate::outln!(out, "  [lt] t={t:.3} PROBE slice={i} sw={sw} fz={fz:.0} err=({:+.3},{:+.3},{:+.3})", error.x, error.y, error.z);
                 }
             }
             self.probe_depth = depth.min(self.probe_max).max(1e-9);
@@ -795,7 +801,8 @@ mod landing_tests {
                     &actual,
                     [50.0, 0.0],
                     2.0 + k as f64 * 0.005,
-                    0.005
+                    0.005,
+                    &mut crate::sink::NullSink,
                 ),
                 0.0
             );
@@ -807,7 +814,7 @@ mod landing_tests {
         let (mut gait, feet, mut actual) = setup(0.052);
         let mut timing = LandingTiming::new(5.0);
         actual.sole[1].z = 0.12;
-        timing.update(&mut gait, &feet, &actual, [50.0, 0.0], 2.0, 0.005);
+        timing.update(&mut gait, &feet, &actual, [50.0, 0.0], 2.0, 0.005, &mut crate::sink::NullSink);
         for k in 0..150 {
             timing.update(
                 &mut gait,
@@ -816,6 +823,7 @@ mod landing_tests {
                 [50.0, 0.0],
                 2.0 + k as f64 * 0.005,
                 0.005,
+                &mut crate::sink::NullSink,
             );
         }
         let (i, t, d) = timing.clock.unwrap();
@@ -830,9 +838,9 @@ mod landing_tests {
         let mut timing = LandingTiming::new(5.0);
         timing.level_steps = true;
         timing.early_confirm_slice = Some((1, 0.65 * 0.70));
-        timing.update(&mut gait, &feet, &actual, [50.0, 20.0], 2.0, 0.005);
+        timing.update(&mut gait, &feet, &actual, [50.0, 20.0], 2.0, 0.005, &mut crate::sink::NullSink);
         for t in [2.250, 2.255] {
-            timing.update(&mut gait, &feet, &actual, [50.0, 20.0], t, 0.005);
+            timing.update(&mut gait, &feet, &actual, [50.0, 20.0], t, 0.005, &mut crate::sink::NullSink);
         }
         assert_eq!(timing.touchdowns, 1);
         assert!((gait.slices[1].t1 - 2.255).abs() < 1e-9);
@@ -841,9 +849,9 @@ mod landing_tests {
         let mut timing = LandingTiming::new(5.0);
         timing.level_steps = true;
         timing.early_confirm_slice = Some((3, 0.65 * 0.70));
-        timing.update(&mut gait, &feet, &actual, [50.0, 20.0], 2.0, 0.005);
+        timing.update(&mut gait, &feet, &actual, [50.0, 20.0], 2.0, 0.005, &mut crate::sink::NullSink);
         for t in [2.250, 2.255] {
-            timing.update(&mut gait, &feet, &actual, [50.0, 20.0], t, 0.005);
+            timing.update(&mut gait, &feet, &actual, [50.0, 20.0], t, 0.005, &mut crate::sink::NullSink);
         }
         assert_eq!(timing.touchdowns, 0);
     }
@@ -852,14 +860,14 @@ mod landing_tests {
         let (mut gait, feet, mut actual) = setup(0.052);
         let mut timing = LandingTiming::new(5.0);
         actual.sole[1].z = 0.08;
-        timing.update(&mut gait, &feet, &actual, [50.0, 20.0], 2.0, 0.005);
+        timing.update(&mut gait, &feet, &actual, [50.0, 20.0], 2.0, 0.005, &mut crate::sink::NullSink);
         for t in [2.35, 2.355, 2.36] {
-            timing.update(&mut gait, &feet, &actual, [50.0, 20.0], t, 0.005);
+            timing.update(&mut gait, &feet, &actual, [50.0, 20.0], t, 0.005, &mut crate::sink::NullSink);
         }
         assert_eq!(timing.touchdowns, 0);
         actual.sole[1].z = 0.053;
         for t in [2.365, 2.37] {
-            timing.update(&mut gait, &feet, &actual, [50.0, 20.0], t, 0.005);
+            timing.update(&mut gait, &feet, &actual, [50.0, 20.0], t, 0.005, &mut crate::sink::NullSink);
         }
         assert_eq!(timing.touchdowns, 1);
         assert!((gait.slices[1].t1 - 2.37).abs() < 1e-9);

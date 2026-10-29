@@ -19,6 +19,7 @@
 //! own stack behind the same request.
 use crate::gait::Support;
 use crate::robot::{RobotModel, RobotState};
+use crate::sink::LogSink;
 use nalgebra as na;
 
 /// A change to a foot's contact anchor, in the order the walker decided it
@@ -250,9 +251,79 @@ pub struct WbcSolution {
 /// A stack of QP levels behind the walker.
 pub trait WbcStack {
     /// Apply the request's anchor events, build the levels, solve, extract.
-    fn solve(&mut self, req: &WbcRequest) -> WbcSolution;
+    /// The stack's own debug lines go to `out`, in the walker's order.
+    fn solve(&mut self, req: &WbcRequest, out: &mut dyn LogSink) -> WbcSolution;
 
     /// A foot's contact anchor (position, rotation), as the last solve left
     /// it.
     fn anchor(&self, side: usize) -> Option<(na::Vector3<f64>, na::Matrix3<f64>)>;
+}
+
+/// Centre of pressure implied by a sole-frame wrench `w = [m(0..3); f(3..6)]`,
+/// as `(x, y, fz)`. `fz <= 0` means the foot is unsupported, and the CoP is
+/// undefined rather than zero. (Moved from articara's `biped::contact`, which
+/// re-exports it.)
+pub fn cop_from_sole_wrench(w: &na::DVector<f64>) -> Option<(f64, f64, f64)> {
+    let fz = w[5];
+    if fz.abs() < 1e-6 {
+        None
+    } else {
+        Some((-w[1] / fz, w[0] / fz, fz))
+    }
+}
+
+/// World-frame reference angular acceleration for the trunk level, built from
+/// a rotation-vector error rather than from Euler components. (Moved from
+/// articara's `biped::tasks`, which re-exports it: it is a reference the
+/// walker computes, not a level.)
+///
+/// Feeding a ZYX roll/pitch error straight into the WORLD angular-acceleration
+/// rows is only the same thing at zero heading. A quarter turn later the
+/// body's roll axis points along world +y, so the roll correction comes out on
+/// the wrong axis; past 90 deg it is also wrong-signed. Measured on kyo46rs:
+/// every turn command fell after a fixed ACCUMULATED heading -- 120 deg at
+/// wz=0.10, 104 deg at 0.20, 90 deg at 0.40 -- while tracking its commanded
+/// rate to ~90% right up to the fall.
+///
+/// `e = log(R_des * R^T)` is the world-frame rotation carrying the body to
+/// upright-at-`yaw_des`, so it is correct at any heading. When `yaw_ref` is
+/// `None` the desired heading is the current one and the z component is zero,
+/// which is what the caller drops.
+pub fn trunk_ori_ref(
+    r_body: &na::UnitQuaternion<f64>,
+    yaw_ref: Option<f64>,
+    omega_world: &[f64; 3],
+    gains: TrunkGains,
+) -> [f64; 3] {
+    let (_, _, yaw_now) = r_body.euler_angles();
+    let yaw_des = yaw_ref.unwrap_or(yaw_now);
+    let r_des = na::UnitQuaternion::from_euler_angles(0.0, 0.0, yaw_des);
+    let e = (r_des * r_body.inverse()).scaled_axis();
+    let dead = |v: f64| {
+        if v.abs() <= gains.deadband {
+            0.0
+        } else {
+            v - gains.deadband * v.signum()
+        }
+    };
+    [
+        gains.sign * (gains.kp * dead(e[0]) - gains.kd * omega_world[0]),
+        gains.sign * (gains.kp * dead(e[1]) - gains.kd * omega_world[1]),
+        gains.kp_yaw * e[2] + gains.kd_yaw * (gains.wz_ref - omega_world[2]),
+    ]
+}
+
+/// Gains for [`trunk_ori_ref`]. Roll/pitch and yaw keep separate gains because
+/// they are tuned against different things -- tilt rejection versus tracking a
+/// commanded turn.
+#[derive(Clone, Copy, Debug)]
+pub struct TrunkGains {
+    pub kp: f64,
+    pub kd: f64,
+    pub deadband: f64,
+    pub sign: f64,
+    pub kp_yaw: f64,
+    pub kd_yaw: f64,
+    /// Commanded yaw RATE, fed forward into the damping term.
+    pub wz_ref: f64,
 }

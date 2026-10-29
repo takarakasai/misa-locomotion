@@ -32,7 +32,10 @@ pub struct Profile {
     pub hip_links: Option<[&'static str; 2]>,
     pub sole_below_origin: f64,
     pub sole_centre_x: f64,
-    /// CoP box half-extents (fore/aft, lateral).
+    /// CoP box half-extents (fore/aft, lateral): the sole's half-size the
+    /// walker plans with (stair toe margins, the CoP box, the contact
+    /// model). A harness may replace it per run (kyo46rs_walk:
+    /// `SOLE_HALF_L` / `SOLE_HALF_W`).
     pub cop_half: (f64, f64),
     /// Height to drop the model from while measuring where the soles land.
     pub probe_z: f64,

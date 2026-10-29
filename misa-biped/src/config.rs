@@ -574,6 +574,7 @@ impl Config {
         lt.max_extension = l.extend;
         lt.speed_z = l.speed_z;
         lt.speed_xy = l.speed_xy;
+        lt.debug = self.debug.land_timing;
         lt
     }
 }
@@ -1371,4 +1372,7 @@ pub struct DebugFlags {
     /// `WBC_LEVEL_DEBUG_T=<t>`: the `[wbc-levels]` lines within 11 ms of t.
     /// Unparsable = None (silently off).
     pub wbc_level_t: Option<f64>,
+    /// `LAND_TIMING_DEBUG` (set): the landing clock's `[lt]` lines
+    /// (`LandingTiming::debug`).
+    pub land_timing: bool,
 }
