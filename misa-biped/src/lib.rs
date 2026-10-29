@@ -21,6 +21,9 @@
 //! - [`robot`]        -- the rigid-body model the walker computes with, the
 //!   state it assembles from an estimate (M, h, FK, CoM Jacobian), and the
 //!   per-tick observation.
+//! - [`wbc`]          -- the seam to the whole-body QP: the request the walker
+//!   makes each tick, the solution, and the `WbcStack` trait a stack of QP
+//!   levels implements.
 
 pub mod profile;
 pub mod gait;
@@ -34,5 +37,6 @@ pub mod plan;
 pub mod recovery;
 pub mod config;
 pub mod robot;
+pub mod wbc;
 
 pub use profile::Profile;
