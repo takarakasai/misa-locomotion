@@ -15,6 +15,7 @@
 //! - [`height`]       -- CoM height reference over that terrain.
 //! - [`plan`]         -- the walker's plan in one place (schedule, footsteps,
 //!   DCM, height, landing clock) and its DCM rebuild.
+//! - [`recovery`]     -- push-recovery references (trajopt) and their world frame.
 
 pub mod profile;
 pub mod gait;
@@ -25,5 +26,6 @@ pub mod reach;
 pub mod terrain;
 pub mod height;
 pub mod plan;
+pub mod recovery;
 
 pub use profile::Profile;
