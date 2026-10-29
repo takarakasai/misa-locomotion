@@ -26,6 +26,8 @@
 //!   levels implements.
 //! - [`sink`]         -- where the walker's output goes: its log lines
 //!   (`LogSink`) and its opt-in diagnostic records (`WalkerDiag`).
+//! - [`walker`]       -- the walker itself: the plan made at start-up, the
+//!   tick's control (`Walker::step`) and its end (`Walker::end_tick`).
 
 pub mod profile;
 pub mod gait;
@@ -41,5 +43,6 @@ pub mod config;
 pub mod robot;
 pub mod wbc;
 pub mod sink;
+pub mod walker;
 
 pub use profile::Profile;

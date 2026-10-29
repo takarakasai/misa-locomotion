@@ -100,15 +100,16 @@ pub struct RobotState {
 
 /// What the walker is given each tick.
 pub struct Observation<'a> {
+    /// The tick; the walker's time is `tick as f64 * dt`.
     pub tick: usize,
     pub estimate: Estimate<'a>,
     /// Vertical contact force per foot [N] (the only part of the measured
     /// contacts the controller reads).
     pub contact_fz: [f64; 2],
-    /// The PLANT's joint angles (harness order), with none of the sensor
-    /// model's delay or noise. Read by the posture levels, as before the
-    /// split; a leak of the truth into the controller, kept visible here
-    /// (§6.6 of the extraction plan).
+    /// LEAK (§6.6 of the extraction plan): the PLANT's joint angles
+    /// (harness order), with none of the sensor model's delay or noise.
+    /// Read by the posture and arm-hold levels, as before the split; a leak
+    /// of the truth into the controller, kept visible here.
     pub joint_pos_plant: &'a [f64],
 }
 
