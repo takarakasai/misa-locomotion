@@ -87,18 +87,13 @@ pub(crate) struct WalkerConsts {
     pub stair_wrench_dt: f64,
     pub stair_wrench_preview_dt: f64,
     pub contact_cfg: ContactParams,
-    /// The levels' references: the turn rate (WZ), the jab's clock and pose
-    /// (JAB*), the swing's xy gain (`cfg.swing.kp_xy()`), whether this
+    /// The levels' references: the turn rate (WZ), the command (the jab's
+    /// clock and pose, JAB*), the swing's xy gain (`cfg.swing.kp_xy()`), whether this
     /// staircase takes the swing's cubic feed-forward (TRACKING_FF_MIN_RISER
     /// against the known riser), and the feet's orientation at start-up
     /// (a planned yaw rotates it).
     pub wz: f64,
-    pub jab: bool,
-    pub jab_start: f64,
-    pub jab_period: f64,
-    pub jab_pattern: String,
-    pub jab_pitch: f64,
-    pub jab_elbow: f64,
+    pub command: super::CommandSchedule,
     pub kp_sw_xy: f64,
     pub tracking_ff_riser_ok: bool,
     pub foot_rot0: [na::Matrix3<f64>; 2],
@@ -113,28 +108,26 @@ pub(crate) struct WalkerConsts {
 /// tick on first use. Both are pure functions of the model and the tick's
 /// `q` / `v`, which nothing changes inside the tick, so the MPC (`h`), the
 /// momentum task and MOM_CMP read the same values they used to compute three
-/// times (the result is bit-identical).
+/// times (the result is bit-identical). `A_G` is kept with the state
+/// ([`RobotModel::cmm`]), so the harness's measurements read the same one.
 pub(crate) struct Centroidal<'a> {
-    model: &'a misarta::model::Model<f64>,
-    q: &'a [f64],
-    v: &'a [f64],
-    cmm: std::cell::OnceCell<na::DMatrix<f64>>,
+    robot: &'a crate::robot::RobotModel,
+    st: &'a RobotState,
     dcmm_v: std::cell::OnceCell<na::Vector6<f64>>,
 }
 
 impl<'a> Centroidal<'a> {
-    pub fn new(model: &'a misarta::model::Model<f64>, q: &'a [f64], v: &'a [f64]) -> Self {
-        Centroidal { model, q, v, cmm: Default::default(), dcmm_v: Default::default() }
+    pub fn new(robot: &'a crate::robot::RobotModel, st: &'a RobotState) -> Self {
+        Centroidal { robot, st, dcmm_v: Default::default() }
     }
 
     pub fn cmm(&self) -> &na::DMatrix<f64> {
-        self.cmm
-            .get_or_init(|| misarta::centroidal::compute_centroidal_momentum_matrix(self.model, self.q))
+        self.robot.cmm(self.st)
     }
 
     pub fn dcmm_v(&self) -> &na::Vector6<f64> {
         self.dcmm_v
-            .get_or_init(|| misarta::centroidal::compute_cmm_dot_times_v(self.model, self.q, self.v))
+            .get_or_init(|| misarta::centroidal::compute_cmm_dot_times_v(&self.robot.model, &self.st.q, &self.st.v))
     }
 }
 
@@ -2840,8 +2833,8 @@ pub(crate) fn phase_task_refs(
     let stairs = &k.stairs;
     let (wz, t_step, gp) = (k.wz, k.t_step, &k.gp);
     let wrench_mpc_apply = k.wrench_mpc_apply;
-    let (jab, jab_start, jab_period, jab_pattern) = (k.jab, k.jab_start, k.jab_period, k.jab_pattern.as_str());
-    let (jab_pitch, jab_elbow) = (k.jab_pitch, k.jab_elbow);
+    let (jab, jab_start) = (k.command.jab, k.command.jab_start);
+    let (jab_pitch, jab_elbow) = (k.command.jab_pitch, k.command.jab_elbow);
     let (kp_sw_xy, tracking_ff_riser_ok) = (k.kp_sw_xy, k.tracking_ff_riser_ok);
     // Rotate the nominal foot orientation to a planned yaw. A turn moves the
     // footstep AND the direction the foot points; commanding the original
@@ -3080,18 +3073,8 @@ pub(crate) fn phase_task_refs(
     // and only while it is: the other arm keeps whatever
     // `ARM_HOLD_JOINTS` asked for.
     let (jab_side, jab_a) = if jab && t >= jab_start {
-        let ph = (t - jab_start) / jab_period;
-        let idx = ph.floor().max(0.0) as usize;
-        let side = if jab_pattern
-            .chars()
-            .nth(idx % jab_pattern.chars().count())
-            .is_some_and(|c| c.eq_ignore_ascii_case(&'l'))
-        {
-            0
-        } else {
-            1
-        };
-        (Some(side), 0.5 * (1.0 - (2.0 * PI * ph.fract()).cos()))
+        let j = k.command.jab_at(t);
+        (Some(j.side), j.extension)
     } else {
         (None, 0.0)
     };

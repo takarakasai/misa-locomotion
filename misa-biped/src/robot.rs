@@ -100,6 +100,11 @@ pub struct RobotState {
     pub body_pos: [f64; 3],
     pub body_quat: na::UnitQuaternion<f64>,
     pub v_ang_w: [f64; 3],
+    /// The centroidal momentum matrix `A_G(q)`, computed on first use
+    /// ([`RobotModel::cmm`]) and kept with the state, so the walker (the
+    /// MPC's `h`, the momentum task, MOM_CMP) and the harness's measurements
+    /// read one computation per tick (S15).
+    cmm: std::cell::OnceCell<na::DMatrix<f64>>,
 }
 
 /// What the walker is given each tick.
@@ -252,7 +257,16 @@ impl RobotModel {
             body_pos: est.base_pos,
             body_quat: est.base_quat,
             v_ang_w: est.base_ang_vel_w,
+            cmm: std::cell::OnceCell::new(),
         }
+    }
+
+    /// The centroidal momentum matrix `A_G(q)` of `st` (`h = A_G v`, rows
+    /// 0..3 angular about the CoM, 3..6 linear), computed on the first call
+    /// for this state and then kept with it. A pure function of the model
+    /// and `st.q`, so who asks first does not change the value.
+    pub fn cmm<'s>(&self, st: &'s RobotState) -> &'s na::DMatrix<f64> {
+        st.cmm.get_or_init(|| misarta::centroidal::compute_centroidal_momentum_matrix(&self.model, &st.q))
     }
 
     /// [`RobotModel::configuration`] then [`RobotModel::state`].

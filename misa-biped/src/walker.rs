@@ -292,6 +292,38 @@ pub struct CommandSchedule {
     pub jab_elbow: f64,
 }
 
+/// Where the jab is at a time (see [`CommandSchedule::jab_at`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JabPhase {
+    /// The arm the pattern names for this period: 0 = left, 1 = right.
+    pub side: usize,
+    /// How far through its period, `[0, 1)`.
+    pub phase: f64,
+    /// `0.5 (1 - cos 2 pi phase)`: 0 = in guard, 1 = fully extended.
+    pub extension: f64,
+}
+
+impl CommandSchedule {
+    /// The jab's own clock at `t` (one pattern character per `jab_period`
+    /// from `jab_start`). Before `jab_start` it reads the start of the first
+    /// period. The walker's arm reference (which only asks from `jab_start`
+    /// on) and the harness's push line share it.
+    pub fn jab_at(&self, t: f64) -> JabPhase {
+        let ph = ((t - self.jab_start) / self.jab_period).max(0.0);
+        let side = if self
+            .jab_pattern
+            .chars()
+            .nth(ph.floor() as usize % self.jab_pattern.chars().count())
+            .is_some_and(|c| c.eq_ignore_ascii_case(&'l'))
+        {
+            0
+        } else {
+            1
+        };
+        JabPhase { side, phase: ph.fract(), extension: 0.5 * (1.0 - (2.0 * std::f64::consts::PI * ph.fract()).cos()) }
+    }
+}
+
 /// What `step` hands the harness for the plant: the WBC's solve (status,
 /// extracted torques / accelerations / forces), the gravity torque the
 /// degraded-solve fallback is built from, and whether the gate rejected it
@@ -1040,12 +1072,7 @@ impl WalkerInit {
             com_preview_dt: wcfg.com_plan.preview_dt.max(dt),
             com_replan_dt: wcfg.com_plan.replan_dt.max(dt),
             wz,
-            jab: command.jab,
-            jab_start: command.jab_start,
-            jab_period: command.jab_period,
-            jab_pattern: command.jab_pattern.clone(),
-            jab_pitch: command.jab_pitch,
-            jab_elbow: command.jab_elbow,
+            command: command.clone(),
             kp_sw_xy,
             tracking_ff_riser_ok,
             foot_rot0,
@@ -1114,13 +1141,13 @@ impl<S: WbcStack> Walker<S> {
             joint_pos_plant: obs.joint_pos_plant,
         };
         let st = obs_state(obs);
-        let (q, v, data) = (&st.q, &st.v, &st.data);
+        let data = &st.data;
         // The measured soles (FK), once per tick: the phases and the
         // trajectory CSV read this one.
         let actual_feet = Footsteps::from_fk(data, robot.foot_mi, prof.sole_centre_x, prof.sole_below_origin);
         // The centroidal momentum matrix (and its rate term), computed once
         // per tick on first use (the MPC, the momentum task, MOM_CMP).
-        let cent = Centroidal::new(&robot.model, q, v);
+        let cent = Centroidal::new(robot, st);
 
         phase_landing_clock(ctl, plan, stats, wcfg, k, obs, &actual_feet, t, out);
         // The anchor changes phases 3 and 4 decide, in order (the stack
@@ -1289,6 +1316,11 @@ impl<S: WbcStack> Walker<S> {
     /// The feet at start-up (sole centres, world).
     pub fn initial_feet(&self) -> &Footsteps {
         &self.k.steps0
+    }
+
+    /// The command the walker was started with.
+    pub fn command(&self) -> &CommandSchedule {
+        &self.k.command
     }
 }
 
