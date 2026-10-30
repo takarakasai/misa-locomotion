@@ -149,8 +149,7 @@ pub(crate) fn obs_state<'a>(obs: &TickObs<'a>) -> &'a RobotState {
 /// Phase 1: the landing detector's tolerances and extension for the slice
 /// the clock is in (ascending, descending, or a step whose end the contact
 /// planner owns). Assigned every tick, before the plant is read.
-#[cfg_attr(not(feature = "walker-claims-check"), allow(unused_variables))] // `ctl`: the old judgement (S16a)
-pub(crate) fn phase_landing_setup(ctl: &CtlState, plan: &mut Plan, cfg: &Config, k: &WalkerConsts, t: f64) {
+pub(crate) fn phase_landing_setup(plan: &mut Plan, cfg: &Config, k: &WalkerConsts, t: f64) {
     // Extra landing-deadline slack for the swing that CHANGES HEIGHT, i.e. the
     // step onto a tread. Zero (the default) means "same as everywhere else".
     //
@@ -212,10 +211,7 @@ pub(crate) fn phase_landing_setup(ctl: &CtlState, plan: &mut Plan, cfg: &Config,
         // The contact planner owns the end of a step it has retimed; the
         // landing extension must not re-open it (assigned every tick, so
         // the planner's own zeroing would be undone here otherwise).
-        let cp_owns_end = claim_check!(
-            plan.claims().end_time_owner(i) == Some(Writer::ContactPlan),
-            ctl.cp_retimed_slice == Some(i)
-        );
+        let cp_owns_end = plan.claims().end_time_owner(i) == Some(Writer::ContactPlan);
         let mut ed = plan.edit(Writer::LandingSetup);
         ed.landing_mut().event_end_on_touch = descending && contact_event_end_on_touch;
         ed.landing_mut().xy_tol_override = if descending { land_confirm_xy_desc } else { None };
@@ -479,7 +475,7 @@ pub(crate) fn phase_landing_clock(
             let is_ds = |j: usize| matches!(plan.gait().slices[j].support, Support::Double);
             // Not while a recovery reference owns the phase durations.
             let ref_owns = claim_check!(plan.claims().whole_owner() == Some(Writer::RecoveryRef), ctl.ref_mode.is_some());
-            let run_done = claim_check!(plan.claims().ds_run_claimed(ds), ctl.dsc_retimed_last.is_some_and(|l| l >= ds));
+            let run_done = plan.claims().ds_run_claimed(ds);
             if is_ds(ds) && !ref_owns && !run_done {
                 // The whole run of double-support slices the clock is in
                 // (a DS is split into ramp / hold / ramp slices).
@@ -541,7 +537,6 @@ pub(crate) fn phase_landing_clock(
                     for (j, nt) in targets {
                         stats.ds_capture_total += ed.retime(j, nt).abs();
                     }
-                    ctl.dsc_retimed_last = Some(last);
                     ed.claim_ds_run(last);
                     stats.n_ds_capture += 1;
                     ed.commit();
@@ -553,7 +548,7 @@ pub(crate) fn phase_landing_clock(
         }
         // (COM_REPLAN_ALWAYS, engaging before the first landing clock, is
         // removed.)
-        let engaged = claim_check!(plan.claims().done(Writer::ReplanStart), ctl.replan_engaged);
+        let engaged = plan.claims().done(Writer::ReplanStart);
         if !engaged && plan.landing().clock.is_some() {
             let cmd_ref = plan.dcm().reference(t);
             ctl.preview_p = commanded_zmp(
@@ -566,7 +561,6 @@ pub(crate) fn phase_landing_clock(
             *ed.height_mut() = crate::preview::HeightPlan::constant(
                 z_com + ctl.terrain_track - terrain_base,
             );
-            ctl.replan_engaged = true;
             ed.claim_once();
             ed.commit();
         }
@@ -1087,7 +1081,7 @@ pub(crate) fn phase_dcm(
     }
     let dcm_err = (xi - r.xi).norm();
     if push_yield_v > 0.0
-        && !claim_check!(plan.claims().done(Writer::PushYield), ctl.push_yield_done)
+        && !plan.claims().done(Writer::PushYield)
         && vx2_sched
         && let Some(v_hi) = vx2_cmd_speed
         && v_hi > push_yield_v
@@ -1104,7 +1098,6 @@ pub(crate) fn phase_dcm(
         // ahead of it.
         && !(push_yield_no_fwd && (xi.x - r.xi.x) > 0.5 * push_yield_trig)
     {
-        ctl.push_yield_done = true;
         let mut ed = plan.edit(Writer::PushYield);
         ed.claim_once();
         let v_lo = push_yield_v;
@@ -1211,10 +1204,7 @@ pub(crate) fn phase_dcm(
                         && !v_now.is_some_and(|v| v > push_replan_vmax);
                     // (PUSH_REPLAN_LAT, the outward lateral step too, is
                     // removed.)
-                    let owns_landing = claim_check!(
-                        plan.claims().landing_owner(i) == Some(Writer::PushReplan),
-                        ctl.push_replan_slice == Some(i)
-                    );
+                    let owns_landing = plan.claims().landing_owner(i) == Some(Writer::PushReplan);
                     if owns_landing
                         || (back_ok && d.norm() > push_replan_trig && e.norm() > push_replan_emin)
                     {
@@ -1252,7 +1242,6 @@ pub(crate) fn phase_dcm(
                                 stats.n_replan += 1;
                                 if debug.replan { outln!(out, "  [diag-replan] site 1 t={t:.3} (line 6901)"); }
                             }
-                            ctl.push_replan_slice = Some(i);
                             ctl.push_replan_shift = (l - *base).norm();
                             if debug.push_replan {
                                 outln!(out, "  [replan] t={t:.3} slice {i} frac={frac:.2} e=({:+.3},{:+.3}) d=({:+.3},{:+.3}) landing ({:.3},{:+.3}) -> ({:.3},{:+.3})", e.x, e.y, d.x, d.y, base.x, base.y, l.x, l.y);
@@ -1528,12 +1517,11 @@ pub(crate) fn phase_cmd_zmp(
         }
         if let Some(ne) = dec.new_end
             && ne > t + dt
-            && !claim_check!(ed.claims().end_time_owner(i) == Some(Writer::ContactPlan), ctl.cp_retimed_slice == Some(i))
+            && ed.claims().end_time_owner(i) != Some(Writer::ContactPlan)
         {
             let dd = ed.retime(i, ne);
             stats.n_cp_retime += 1;
             stats.cp_retime_total += dd.abs();
-            ctl.cp_retimed_slice = Some(i);
             ed.claim_end_time(i);
             // The planner has now set this step's end; the landing
             // extension must not move it again (the two would fight
@@ -1577,7 +1565,7 @@ pub(crate) fn phase_preview(
     let (com_preview_dt, com_replan_dt) = (k.com_preview_dt, k.com_replan_dt);
     let st = obs_state(obs);
     let (com, com_vel) = (st.com, st.com_vel);
-    if ctl.replan_engaged {
+    if plan.claims().done(Writer::ReplanStart) {
         let measured_support = if stance_sides.len() == 2 {
             Support::Double
         } else {
@@ -1834,7 +1822,7 @@ pub(crate) fn phase_height(
     } else {
         0.0
     };
-    let (z_ref, zd_ref, zdd_ref) = if ctl.replan_engaged && com_height_replan && plan.landing().clock.is_some() {
+    let (z_ref, zd_ref, zdd_ref) = if plan.claims().done(Writer::ReplanStart) && com_height_replan && plan.landing().clock.is_some() {
         // Where the CoM height aims while BOTH feet count: historically
         // the mean sole height. Measured 2026-09-24 on the 80 mm riser
         // with the landed foot admitted at the start of double support
@@ -2283,10 +2271,7 @@ pub(crate) fn phase_wrench_mpc(
                 (b, plus)
             };
             let landing = if mpc_footstep
-                && !claim_check!(
-                    plan.claims().landing_owner(plan.gait().index_at(t)) == Some(Writer::PushReplan),
-                    ctl.push_replan_slice == Some(plan.gait().index_at(t))
-                )
+                && plan.claims().landing_owner(plan.gait().index_at(t)) != Some(Writer::PushReplan)
                 && wrench_mpc_apply
                 && let Support::Single { swing, .. } = support
                 && {
@@ -3445,10 +3430,7 @@ pub(crate) fn phase_task_refs(
                     (pos0, vel0, na::Vector3::zeros())
                 };
             let replan_hold = push_replan_trig > 0.0
-                && claim_check!(
-                    plan.claims().landing_owner(slice_idx) == Some(Writer::PushReplan),
-                    ctl.push_replan_slice == Some(slice_idx)
-                )
+                && plan.claims().landing_owner(slice_idx) == Some(Writer::PushReplan)
                 && ctl.push_replan_shift > push_replan_hold;
             // 0.05: the default of PUSH_REPLAN_HOLD_Z (removed; the
             // champion turns the hold off with PUSH_REPLAN_HOLD=10).

@@ -36,6 +36,11 @@ use super::dcm::DcmPlan;
 /// `walker-claims-check` feature, the controller-state judgement it
 /// replaced (the second) is computed too and asserted equal -- the S16
 /// check that the claims are a faithful copy before the old fields go.
+/// S16a checked all seven kinds over the eq suite; S16b removed the fields
+/// that only held a claim (`cp_retimed_slice`, `push_replan_slice`,
+/// `push_yield_done`, `dsc_retimed_last`, `replan_engaged`). What is left is
+/// the whole-plan claim against `ref_mode.is_some()`: the controller keeps
+/// `ref_mode` for the engaged reference's frame, so the pair stays checkable.
 macro_rules! claim_check {
     ($new:expr, $old:expr) => {{
         let new = $new;

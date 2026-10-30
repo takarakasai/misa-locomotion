@@ -38,8 +38,6 @@ use phases::*;
 /// `let` of the same name before the loop, which gives its initial value;
 /// gathered here so what the controller remembers is one thing.
 pub(crate) struct CtlState {
-    /// PUSH_YIELD has slowed the walk (once per run).
-    pub push_yield_done: bool,
     /// Speed-scheduled CoM drop, slewed.
     pub vx2_z_track: crate::height::SlewedDrop,
     /// PUSH_Z_DROP holds the lowered CoM until this time.
@@ -48,11 +46,10 @@ pub(crate) struct CtlState {
     pub correction: crate::gait::ContactCorrection,
     /// Terrain height under the support, slewed.
     pub terrain_track: f64,
-    /// contact_plan: the landing shift applied to `cp_slice`, and the slice
-    /// whose end it has retimed (it then owns that end).
+    /// contact_plan: the landing shift applied to `cp_slice` (the slice
+    /// whose end it has retimed is the plan's claim, `SliceClaims::end_time`).
     pub cp_applied: na::Vector2<f64>,
     pub cp_slice: Option<usize>,
-    pub cp_retimed_slice: Option<usize>,
     /// Contact admission: the last scheduled admit, the sole height measured
     /// at it, and the double support each foot is certified for.
     pub last_scheduled_admit: [Option<usize>; 2],
@@ -64,10 +61,9 @@ pub(crate) struct CtlState {
     pub ref_cooldown_until: f64,
     pub ref_lat_quiet_t: f64,
     pub ref_mode: Option<RefMode>,
-    /// DS_CAPTURE retimes a double support once.
-    pub dsc_retimed_last: Option<usize>,
     /// PUSH_REPLAN: (slice, original footsteps, original DCM plan, original
-    /// landing, last applied landing), the slice it owns, and the hold shift.
+    /// landing, last applied landing) and the hold shift (the slice whose
+    /// landing it owns is the plan's claim, `SliceClaims::landing`).
     pub push_replan_state: Option<(
         usize,
         crate::gait::FootstepPlan,
@@ -75,12 +71,9 @@ pub(crate) struct CtlState {
         na::Vector2<f64>,
         Option<na::Vector2<f64>>,
     )>,
-    pub push_replan_slice: Option<usize>,
     pub push_replan_shift: f64,
     /// (slice, inward is +y) latched when the MPC crossing gate opens.
     pub mpc_fs_cross_latched: Option<(usize, bool)>,
-    /// COM_REPLAN has started (the height plan was rebuilt).
-    pub replan_engaged: bool,
     /// CoM preview: the reference ZMP, the predicted CoM and velocity, and
     /// the time of the next solve.
     pub preview_p: na::Vector2<f64>,
@@ -1005,14 +998,12 @@ impl WalkerInit {
         // Terrain height under the support starts at the spawn platform's.
         let terrain_track = stairs.as_ref().map_or(0.0, |st| st.base());
         let ctl = CtlState {
-            push_yield_done: false,
             vx2_z_track: crate::height::SlewedDrop::default(),
             push_z_drop_until: f64::NEG_INFINITY,
             correction,
             terrain_track,
             cp_applied: na::Vector2::zeros(),
             cp_slice: None,
-            cp_retimed_slice: None,
             last_scheduled_admit: [None; 2],
             admit_measured_z: [None; 2],
             confirmed_admit: [None; 2],
@@ -1020,12 +1011,9 @@ impl WalkerInit {
             ref_cooldown_until: f64::NEG_INFINITY,
             ref_lat_quiet_t: f64::NEG_INFINITY,
             ref_mode: None,
-            dsc_retimed_last: None,
             push_replan_state: None,
-            push_replan_slice: None,
             push_replan_shift: 0.0,
             mpc_fs_cross_latched: None,
-            replan_engaged: false,
             preview_p: steps.mid_xy(),
             preview_c: com0.xy(),
             preview_v: na::Vector2::zeros(),
@@ -1129,7 +1117,7 @@ impl<S: WbcStack> Walker<S> {
         let robot = &k.robot;
         let prof = robot.prof;
         // Phase 1: the landing detector's settings (it reads no observation).
-        phase_landing_setup(ctl, plan, wcfg, k, t);
+        phase_landing_setup(plan, wcfg, k, t);
         // The state from the estimate (S14; the harness assembled it
         // before): q / v, M with the armature, h with the damping, the FK,
         // the CoM and its Jacobian. The phases read it through `TickObs`.
@@ -1247,7 +1235,7 @@ impl<S: WbcStack> Walker<S> {
             swing_task_residual_rms,
             swing_pos_err_xy,
             swing_pos_err_z,
-            replan_engaged: ctl.replan_engaged,
+            replan_engaged: plan.claims().done(crate::plan::Writer::ReplanStart),
             preview_c: ctl.preview_c,
             preview_v: ctl.preview_v,
             wrench_mpc_command: ctl.wrench_mpc_command,
