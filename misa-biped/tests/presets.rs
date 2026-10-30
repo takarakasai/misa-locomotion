@@ -68,3 +68,40 @@ fn rough_mode_wins_over_its_knobs() {
     let c = config_env::config_from_kv(&profile::G1_23DOF, &|k| kv.get(k).map(|v| v.to_string()));
     assert_eq!(c.swing.lift_h, 0.06);
 }
+
+/// `WALKER_PRESET` (S17): the preset is the base, and a key over it wins.
+#[test]
+fn walker_preset_is_the_base() {
+    let one = |preset: &str| -> HashMap<String, String> { [("WALKER_PRESET".to_string(), preset.to_string())].into() };
+    let kv = one("g1_v619");
+    assert_eq!(config_env::config_from_kv(&profile::G1_23DOF, &|k| kv.get(k).cloned()), Config::g1_v619());
+    let kv = one("kyo46rs_v2");
+    assert_eq!(config_env::config_from_kv(&profile::by_name(""), &|k| kv.get(k).cloned()), Config::kyo46rs_v2());
+    // Under its own controls the preset is unchanged (every key restates it).
+    for (prof, rel, preset, want) in [
+        (profile::G1_23DOF, "log/claude_g1champion_20261029v619/controls.json", "g1_v619", Config::g1_v619()),
+        (profile::by_name(""), "log/claude_g1rand_20260925/kyo_base_v2.json", "kyo46rs_v2", Config::kyo46rs_v2()),
+    ] {
+        let mut kv = flat_json(rel);
+        kv.insert("WALKER_PRESET".into(), preset.into());
+        assert_eq!(config_env::config_from_kv(&prof, &|k| kv.get(k).cloned()), want, "{rel}");
+    }
+    // A key over the preset wins; the rest stays the preset's.
+    let mut kv = one("g1_v619");
+    kv.insert("KP_COM".into(), "123.5".into());
+    kv.insert("ZMP_ROLL".into(), "0.01".into());
+    kv.insert("WBC_STRATEGY".into(), "null_space".into());
+    let c = config_env::config_from_kv(&profile::G1_23DOF, &|k| kv.get(k).cloned());
+    let mut want = Config::g1_v619();
+    want.gains.kp_com = 123.5;
+    want.dcm.zmp_roll = Some(0.01);
+    want.wbc.strategy = misa_wbc::HqpStrategy::NullSpace;
+    assert_eq!(c, want);
+}
+
+#[test]
+#[should_panic(expected = "WALKER_PRESET=g1_v619 is the G1 preset")]
+fn walker_preset_for_another_robot_panics() {
+    let kv: HashMap<&str, &str> = [("WALKER_PRESET", "g1_v619")].into();
+    config_env::config_from_kv(&profile::KYO46RS, &|k| kv.get(k).map(|v| v.to_string()));
+}
