@@ -12,3 +12,9 @@ misa-wbc = { git = "https://github.com/takarakasai/misa-wbc.git" }
 # its own dependencies are misa-wbc and nalgebra only).
 misa-mpc = { path = "../misa-mpc" }
 nalgebra = "0.34.2"
+
+[features]
+# S16 of doc/from_claude/20261029_walker_extraction_plan.md: compute the
+# controller-state judgements the plan's SliceClaims replaced alongside
+# them and assert they agree (a release build with this runs the eq suite).
+walker-claims-check = []

@@ -934,7 +934,7 @@ impl WalkerInit {
             crate::preview::HeightPlan::constant(z_com),
             wcfg.landing_timing(total_mass, G),
         );
-        let omega = plan.dcm.omega;
+        let omega = plan.dcm().omega;
         outln!(out, 
             "gait: {} steps, DS {:.2}s / SS {:.2}s (start {:.2}s), first swing = {}",
             gp.n_steps,
@@ -969,7 +969,7 @@ impl WalkerInit {
                 "stride: {:.3} m/step -> {:.3} m/s commanded, {:.2} m of travel planned over {} steps",
                 stride,
                 stride / (gp.t_ss + gp.t_ds),
-                plan.footsteps.travel_x(),
+                plan.footsteps().travel_x(),
                 gp.n_steps
             );
         }
@@ -1030,7 +1030,7 @@ impl WalkerInit {
             preview_c: com0.xy(),
             preview_v: na::Vector2::zeros(),
             preview_next: 0.0,
-            prev_support: plan.gait.support_at(0.0),
+            prev_support: plan.gait().support_at(0.0),
             swing_lift_off: None,
             fz_prev: [0.0; 2],
             fz_rate_ema: [0.0; 2],

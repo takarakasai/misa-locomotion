@@ -18,7 +18,7 @@ use crate::gait::{
 use crate::dcm::G;
 use crate::terrain::Stairs;
 use crate::config::Config;
-use crate::plan::Plan;
+use crate::plan::{Plan, Writer, claim_check};
 use crate::recovery::{RefLib, RefMode};
 use crate::robot::{RobotModel, RobotState};
 use crate::sink::{LogSink, WalkerDiag};
@@ -38,7 +38,7 @@ pub(crate) struct WalkerConsts {
     pub robot: RobotModel,
     /// Realised control period (substeps x sim dt).
     pub dt: f64,
-    /// The DCM plan's omega (`plan.dcm.omega`).
+    /// The DCM plan's omega (`plan.dcm().omega`).
     pub omega: f64,
     pub total_mass: f64,
     /// Nominal CoM height and the terrain height it was measured over.
@@ -149,6 +149,7 @@ pub(crate) fn obs_state<'a>(obs: &TickObs<'a>) -> &'a RobotState {
 /// Phase 1: the landing detector's tolerances and extension for the slice
 /// the clock is in (ascending, descending, or a step whose end the contact
 /// planner owns). Assigned every tick, before the plant is read.
+#[cfg_attr(not(feature = "walker-claims-check"), allow(unused_variables))] // `ctl`: the old judgement (S16a)
 pub(crate) fn phase_landing_setup(ctl: &CtlState, plan: &mut Plan, cfg: &Config, k: &WalkerConsts, t: f64) {
     // Extra landing-deadline slack for the swing that CHANGES HEIGHT, i.e. the
     // step onto a tread. Zero (the default) means "same as everywhere else".
@@ -201,19 +202,24 @@ pub(crate) fn phase_landing_setup(ctl: &CtlState, plan: &mut Plan, cfg: &Config,
         // a stair swing (`preview.rs`: the planned sole height changes by
         // more than 5 mm), so the slack applies to exactly the swings that
         // need it and to no others.
-        let i = plan.gait.index_at(t);
-        let dz_swing = plan.gait.slices[i].support.swing().map_or(0.0, |side| {
-            plan.footsteps.at_slice(i).sole[side].z
-                - plan.footsteps.at_slice(i.saturating_sub(1)).sole[side].z
+        let i = plan.gait().index_at(t);
+        let dz_swing = plan.gait().slices[i].support.swing().map_or(0.0, |side| {
+            plan.footsteps().at_slice(i).sole[side].z
+                - plan.footsteps().at_slice(i.saturating_sub(1)).sole[side].z
         });
         let rising = dz_swing.abs() > step_dz_min;
         let descending = dz_swing < -step_dz_min;
-        plan.landing.event_end_on_touch = descending && contact_event_end_on_touch;
-        plan.landing.xy_tol_override = if descending { land_confirm_xy_desc } else { None };
         // The contact planner owns the end of a step it has retimed; the
         // landing extension must not re-open it (assigned every tick, so
         // the planner's own zeroing would be undone here otherwise).
-        plan.landing.max_extension = if contact_plan_on && ctl.cp_retimed_slice == Some(i) {
+        let cp_owns_end = claim_check!(
+            plan.claims().end_time_owner(i) == Some(Writer::ContactPlan),
+            ctl.cp_retimed_slice == Some(i)
+        );
+        let mut ed = plan.edit(Writer::LandingSetup);
+        ed.landing_mut().event_end_on_touch = descending && contact_event_end_on_touch;
+        ed.landing_mut().xy_tol_override = if descending { land_confirm_xy_desc } else { None };
+        ed.landing_mut().max_extension = if contact_plan_on && cp_owns_end {
             0.0
         } else if descending {
             land_extend_desc
@@ -222,6 +228,7 @@ pub(crate) fn phase_landing_setup(ctl: &CtlState, plan: &mut Plan, cfg: &Config,
         } else {
             land_extend_base
         };
+        ed.commit();
     }
 }
 
@@ -328,45 +335,55 @@ pub(crate) fn phase_landing_clock(
     let com = st.com;
     let com_vel = st.com_vel;
     if com_replan {
-        let touchdowns_before = plan.landing.touchdowns;
-        let timeouts_before = plan.landing.timeouts;
-        let shift = plan.landing.update(&mut plan.gait, &plan.footsteps, &actual, obs.contact_fz, t, dt, out);
-        let landing_timed_out = plan.landing.timeouts > timeouts_before;
+        let touchdowns_before = plan.landing().touchdowns;
+        let timeouts_before = plan.landing().timeouts;
+        // The clock's own retime (extend, confirm, time out) is rebuilt below
+        // where it always was: by the touchdown event's commit, and by the
+        // clock's second commit when it moved the end or the timeout
+        // re-plan asks. Its touchdown event is taken here (read only below).
+        let mut clock = plan.edit(Writer::LandingClock);
+        let shift = clock.update_landing(&actual, obs.contact_fz, t, dt, out);
+        let last_event = clock.landing_mut().last_event.take();
+        clock.commit();
+        let landing_timed_out = plan.landing().timeouts > timeouts_before;
         // The slice that just ended is the timer's clock slice, not
         // `gait.index_at(t)`: on a timeout tick the index already points
         // at the double support, whose swing side is None.
         if contact_admit_confirmed
-            && (plan.landing.touchdowns > touchdowns_before || landing_timed_out)
-            && let Some((ended, _, _)) = plan.landing.clock
-            && let Some(sw) = plan.gait.slices[ended].support.swing()
-            && (plan.footsteps.at_slice(ended).sole[sw].z - actual.sole[sw].z).abs() < contact_admit_z
+            && (plan.landing().touchdowns > touchdowns_before || landing_timed_out)
+            && let Some((ended, _, _)) = plan.landing().clock
+            && let Some(sw) = plan.gait().slices[ended].support.swing()
+            && (plan.footsteps().at_slice(ended).sole[sw].z - actual.sole[sw].z).abs() < contact_admit_z
         {
             ctl.confirmed_admit[sw] = Some(ended + 1);
             if debug.contact_admit {
-                outln!(out, "  [adm] t={t:.3} certificate side={sw} ds_slice={} (confirm={} timeout={})", ended + 1, plan.landing.touchdowns > touchdowns_before, landing_timed_out);
+                outln!(out, "  [adm] t={t:.3} certificate side={sw} ds_slice={} (confirm={} timeout={})", ended + 1, plan.landing().touchdowns > touchdowns_before, landing_timed_out);
             }
         }
-        if let Some((li, lsw, err_xy)) = plan.landing.last_event.take()
+        if let Some((li, lsw, err_xy)) = last_event
             && contact_event_shift
             && err_xy.norm() > 1e-4
         {
             // plan - actual = err  ->  move the plan by -err onto the foot.
-            plan.footsteps.shift_next(li, lsw, -err_xy);
-            plan.rebuild_dcm();
+            let mut ed = plan.edit(Writer::ContactEvent);
+            ed.shift_next(li, lsw, -err_xy);
+            ed.commit();
         }
         if shift != 0.0 || (ds_feasible_on_timeout && landing_timed_out) {
             if shift != 0.0 {
                 stats.landing_retimes += 1;
                 stats.landing_delay += -shift;
             }
-            plan.rebuild_dcm();
+            let mut clock = plan.edit(Writer::LandingClock);
+            clock.touch();
+            clock.commit();
             ctl.preview_next = t;
             if ds_feasible {
-                let ds = plan.gait.index_at(t + 1e-6);
-                if matches!(plan.gait.slices[ds].support, Support::Double) {
+                let ds = plan.gait().index_at(t + 1e-6);
+                if matches!(plan.gait().slices[ds].support, Support::Double) {
                     let xi_meas = dcm_of(&com, &com_vel, omega);
-                    let seg = plan.dcm.index_at(t + 1e-6);
-                    let target = plan.dcm.xi_eos[seg];
+                    let seg = plan.dcm().index_at(t + 1e-6);
+                    let target = plan.dcm().xi_eos[seg];
                     let ds_box_full = SupportBox::from_stance_yawed(
                         &actual,
                         Support::Double,
@@ -376,7 +393,7 @@ pub(crate) fn phase_landing_clock(
                     // The support that just ended tells which foot carries the load.
                     let prev_sw = ds
                         .checked_sub(1)
-                        .and_then(|j| plan.gait.slices[j].support.swing());
+                        .and_then(|j| plan.gait().slices[j].support.swing());
                     let ds_box = match (ds_feasible_box_stance, prev_sw) {
                         (true, Some(sw)) => SupportBox::from_stance_yawed(
                             &actual,
@@ -392,7 +409,7 @@ pub(crate) fn phase_landing_clock(
                     // put the pivot on the DCM when it was inside the box
                     // (gap zero, `Degenerate`) and the branch never fired
                     // -- measured 2026-09-24, 0 retimes in 384 runs.
-                    let nominal = plan.gait.slices[ds].duration();
+                    let nominal = plan.gait().slices[ds].duration();
                     let p_continuous = |tt: f64| -> na::Vector2<f64> {
                         let d = (-omega * tt).exp();
                         ds_box.clamp(&((xi_meas - target * d) / (1.0 - d))).0
@@ -411,37 +428,45 @@ pub(crate) fn phase_landing_clock(
                     let want = need.clamp(nominal, ds_feasible_max);
                     if ds_feasible_continuous {
                         if want > nominal + 1e-3 {
-                            let dd = plan.gait.retime(ds, plan.gait.slices[ds].t0 + want);
+                            let mut ed = plan.edit(Writer::DsFeasible);
+                            let dd = ed.retime(ds, ed.gait().slices[ds].t0 + want);
                             stats.n_ds_feasible += 1;
                             stats.ds_feasible_total += dd.abs();
-                            plan.rebuild_dcm();
+                            ed.commit();
                         }
-                        let seg_ds = plan.dcm.index_at(plan.gait.slices[ds].t0 + 1e-6);
-                        let p_final = if ds_feasible_ramp && seg_ds + 1 < plan.dcm.segs.len() {
-                            let tt = plan.gait.slices[ds].duration();
+                        // The double support's ZMP onto the BUILT reference,
+                        // after the commit. KNOWN LEAK (plan.rs, §7 of the
+                        // extraction plan, item 8): the next commit that
+                        // rebuilds -- any writer's, this tick or later --
+                        // drops it. Kept as it is (changing it changes the
+                        // walk).
+                        let seg_ds = plan.dcm().index_at(plan.gait().slices[ds].t0 + 1e-6);
+                        let p_final = if ds_feasible_ramp && seg_ds + 1 < plan.dcm().segs.len() {
+                            let tt = plan.gait().slices[ds].duration();
                             let wt = omega * tt;
                             let d = (-wt).exp();
                             let b = (1.0 - d) / wt - d;
                             let a = 1.0 - (1.0 - d) / wt;
-                            let p1 = plan.dcm.segs[seg_ds + 1].p0;
+                            let p1 = plan.dcm().segs[seg_ds + 1].p0;
                             let p0 = ds_box.clamp(&((xi_meas - target * d - p1 * b) / a)).0;
-                            plan.dcm.set_segment_zmp_ramp(seg_ds, p0, p1);
+                            plan.set_segment_zmp_ramp(seg_ds, p0, p1);
                             p0
                         } else {
-                            let p = p_continuous(plan.gait.slices[ds].duration());
-                            plan.dcm.set_segment_zmp(seg_ds, p);
+                            let p = p_continuous(plan.gait().slices[ds].duration());
+                            plan.set_segment_zmp(seg_ds, p);
                             p
                         };
                         stats.n_ds_continuous += 1;
                         if debug.ds_feasible {
-                            let r = plan.dcm.reference(plan.gait.slices[ds].t0 + 1e-6);
-                            outln!(out, "  [dsc] t={t:.3} ds={ds} xi=({:.3},{:+.3}) target=({:.3},{:+.3}) p=({:.3},{:+.3}) T={:.3} xi_ref(t0)=({:.3},{:+.3})", xi_meas.x, xi_meas.y, target.x, target.y, p_final.x, p_final.y, plan.gait.slices[ds].duration(), r.xi.x, r.xi.y);
+                            let r = plan.dcm().reference(plan.gait().slices[ds].t0 + 1e-6);
+                            outln!(out, "  [dsc] t={t:.3} ds={ds} xi=({:.3},{:+.3}) target=({:.3},{:+.3}) p=({:.3},{:+.3}) T={:.3} xi_ref(t0)=({:.3},{:+.3})", xi_meas.x, xi_meas.y, target.x, target.y, p_final.x, p_final.y, plan.gait().slices[ds].duration(), r.xi.x, r.xi.y);
                         }
                     } else if want > nominal + 1e-3 {
-                        let dd = plan.gait.retime(ds, plan.gait.slices[ds].t0 + want);
+                        let mut ed = plan.edit(Writer::DsFeasible);
+                        let dd = ed.retime(ds, ed.gait().slices[ds].t0 + want);
                         stats.n_ds_feasible += 1;
                         stats.ds_feasible_total += dd.abs();
-                        plan.rebuild_dcm();
+                        ed.commit();
                     }
                     if debug.ds_feasible {
                         outln!(out, "  [dsf] t={t:.3} ds={ds} xi=({:.3},{:+.3}) target=({:.3},{:+.3}) p=({:.3},{:+.3}) need={need:.3} nominal={nominal:.3} -> {want:.3}", xi_meas.x, xi_meas.y, target.x, target.y, p.x, p.y);
@@ -450,10 +475,12 @@ pub(crate) fn phase_landing_clock(
             }
         }
         if ds_capture {
-            let ds = plan.gait.index_at(t + 1e-6);
-            let is_ds = |j: usize| matches!(plan.gait.slices[j].support, Support::Double);
+            let ds = plan.gait().index_at(t + 1e-6);
+            let is_ds = |j: usize| matches!(plan.gait().slices[j].support, Support::Double);
             // Not while a recovery reference owns the phase durations.
-            if is_ds(ds) && ctl.ref_mode.is_none() && !ctl.dsc_retimed_last.is_some_and(|l| l >= ds) {
+            let ref_owns = claim_check!(plan.claims().whole_owner() == Some(Writer::RecoveryRef), ctl.ref_mode.is_some());
+            let run_done = claim_check!(plan.claims().ds_run_claimed(ds), ctl.dsc_retimed_last.is_some_and(|l| l >= ds));
+            if is_ds(ds) && !ref_owns && !run_done {
                 // The whole run of double-support slices the clock is in
                 // (a DS is split into ramp / hold / ramp slices).
                 let mut first = ds;
@@ -461,15 +488,15 @@ pub(crate) fn phase_landing_clock(
                     first -= 1;
                 }
                 let mut last = ds;
-                while last + 1 < plan.gait.slices.len() && is_ds(last + 1) {
+                while last + 1 < plan.gait().slices.len() && is_ds(last + 1) {
                     last += 1;
                 }
-                let t0_run = plan.gait.slices[first].t0;
-                let t1_run = plan.gait.slices[last].t1;
+                let t0_run = plan.gait().slices[first].t0;
+                let t1_run = plan.gait().slices[last].t1;
                 let remaining = t1_run - t;
                 let xi_meas = dcm_of(&com, &com_vel, omega);
-                let seg_last = plan.dcm.index_at(t1_run - 1e-6);
-                let target = plan.dcm.xi_eos[seg_last];
+                let seg_last = plan.dcm().index_at(t1_run - 1e-6);
+                let target = plan.dcm().xi_eos[seg_last];
                 let ds_box = SupportBox::from_stance_yawed(
                     &actual,
                     Support::Double,
@@ -494,7 +521,7 @@ pub(crate) fn phase_landing_clock(
                     && need > remaining * ds_capture_hopeless
                     && (!ds_capture_fwd_only || xi_meas.x > target.x + ds_capture_margin);
                 let hopeless = hopeless_x;
-                let prev_sw = first.checked_sub(1).and_then(|j| plan.gait.slices[j].support.swing());
+                let prev_sw = first.checked_sub(1).and_then(|j| plan.gait().slices[j].support.swing());
                 let landed_load = prev_sw.map_or(0.0, |sw| ctl.fz_prev[sw]);
                 let earliest = (t0_run + ds_capture_t_min).max(t + 2.0 * dt);
                 if debug.ds_capture {
@@ -509,13 +536,15 @@ pub(crate) fn phase_landing_clock(
                 {
                     let f = (earliest - t) / remaining;
                     let targets: Vec<(usize, f64)> =
-                        (ds..=last).map(|j| (j, t + (plan.gait.slices[j].t1 - t) * f)).collect();
+                        (ds..=last).map(|j| (j, t + (plan.gait().slices[j].t1 - t) * f)).collect();
+                    let mut ed = plan.edit(Writer::DsCapture);
                     for (j, nt) in targets {
-                        stats.ds_capture_total += plan.gait.retime(j, nt).abs();
+                        stats.ds_capture_total += ed.retime(j, nt).abs();
                     }
                     ctl.dsc_retimed_last = Some(last);
+                    ed.claim_ds_run(last);
                     stats.n_ds_capture += 1;
-                    plan.rebuild_dcm();
+                    ed.commit();
                     if debug.ds_capture {
                         outln!(out, "  [dsc-cap] t={t:.3} DS end {t1_run:.3} -> {earliest:.3}");
                     }
@@ -524,18 +553,22 @@ pub(crate) fn phase_landing_clock(
         }
         // (COM_REPLAN_ALWAYS, engaging before the first landing clock, is
         // removed.)
-        if !ctl.replan_engaged && plan.landing.clock.is_some() {
-            let cmd_ref = plan.dcm.reference(t);
+        let engaged = claim_check!(plan.claims().done(Writer::ReplanStart), ctl.replan_engaged);
+        if !engaged && plan.landing().clock.is_some() {
+            let cmd_ref = plan.dcm().reference(t);
             ctl.preview_p = commanded_zmp(
                 &dcm_of(&com, &com_vel, omega),
                 &cmd_ref,
                 omega,
                 k_dcm,
             );
-            plan.height = crate::preview::HeightPlan::constant(
+            let mut ed = plan.edit(Writer::ReplanStart);
+            *ed.height_mut() = crate::preview::HeightPlan::constant(
                 z_com + ctl.terrain_track - terrain_base,
             );
             ctl.replan_engaged = true;
+            ed.claim_once();
+            ed.commit();
         }
     }
 }
@@ -588,7 +621,7 @@ pub(crate) fn phase_support(
     // borrow on `gait` here is what stops the step-timing adaptation
     // below from retiming it.
     let (slice, slice_frac) = {
-        let (sl, f) = plan.gait.at(t);
+        let (sl, f) = plan.gait().at(t);
         (*sl, f)
     };
     let support = if no_lift {
@@ -596,11 +629,11 @@ pub(crate) fn phase_support(
     } else {
         slice.support
     };
-    let step_idx = plan.gait.steps_taken(t.max(1e-9));
-    let slice_idx = plan.gait.index_at(t);
+    let step_idx = plan.gait().steps_taken(t.max(1e-9));
+    let slice_idx = plan.gait().index_at(t);
     // Everything below reads the footsteps for THIS slice. With stride 0
     // they are the same pair every time and this is the old behaviour.
-    let steps = *plan.footsteps.at_slice(slice_idx);
+    let steps = *plan.footsteps().at_slice(slice_idx);
     let swing_rot_mode = if stair_zone_swing_rot > 0
         && stairs.as_ref().is_some_and(|st| {
             crate::height::stair_zone_crouch(steps.mid_xy().x, st, stair_crouch_lead, stair_crouch_tail, 1.0) > 0.0
@@ -800,9 +833,9 @@ pub(crate) fn phase_contacts(
         if contact_admit_scheduled
             && matches!(support, Support::Double)
         {
-            let now_slice = plan.gait.index_at(t);
+            let now_slice = plan.gait().index_at(t);
             if let Some(prev) = now_slice.checked_sub(1)
-                && let Some(landed) = plan.gait.slices[prev].support.swing()
+                && let Some(landed) = plan.gait().slices[prev].support.swing()
                 && ctl.confirmed_admit[landed].is_none()
                 && !sides.contains(&landed)
                 && ctl.last_scheduled_admit[landed] != Some(now_slice)
@@ -828,7 +861,7 @@ pub(crate) fn phase_contacts(
             }
         }
         if contact_admit_confirmed || contact_admit_scheduled {
-            let now_slice = plan.gait.index_at(t);
+            let now_slice = plan.gait().index_at(t);
             for side in 0..2 {
                 let Some(ds_slice) = ctl.confirmed_admit[side] else { continue };
                 if now_slice > ds_slice {
@@ -904,13 +937,13 @@ pub(crate) fn phase_contacts(
     // way to shrink a foot's authority without a step change in the
     // constraint set.
     let (landing, lifting) = if matches!(support, Support::Double) && !no_lift {
-        let i = plan.gait.index_at(t);
+        let i = plan.gait().index_at(t);
         let landed = if i > 0 {
-            plan.gait.slices[i - 1].support.swing()
+            plan.gait().slices[i - 1].support.swing()
         } else {
             None
         };
-        let next = plan.gait.slices.get(i + 1).and_then(|s| s.support.swing());
+        let next = plan.gait().slices.get(i + 1).and_then(|s| s.support.swing());
         (landed, next)
     } else {
         (None, None)
@@ -1031,7 +1064,7 @@ pub(crate) fn phase_dcm(
     let (support, slice_frac, slice_idx) = (sup.support, sup.slice_frac, sup.slice_idx);
     // (DCM_LEAD_S, a sensor-delay lead on the measured DCM, is removed.)
     let xi = dcm_of(&com, &com_vel, omega);
-    let mut r = plan.dcm.reference(t);
+    let mut r = plan.dcm().reference(t);
     // For a LANDED (re-step) reference the DCM law tracks the
     // reference's own DCM and CoP (its CoM and contact forces) instead of
     // the re-planned LIPM. Measured 2026-10-13 on ld7_a: without it the
@@ -1054,7 +1087,7 @@ pub(crate) fn phase_dcm(
     }
     let dcm_err = (xi - r.xi).norm();
     if push_yield_v > 0.0
-        && !ctl.push_yield_done
+        && !claim_check!(plan.claims().done(Writer::PushYield), ctl.push_yield_done)
         && vx2_sched
         && let Some(v_hi) = vx2_cmd_speed
         && v_hi > push_yield_v
@@ -1072,6 +1105,8 @@ pub(crate) fn phase_dcm(
         && !(push_yield_no_fwd && (xi.x - r.xi.x) > 0.5 * push_yield_trig)
     {
         ctl.push_yield_done = true;
+        let mut ed = plan.edit(Writer::PushYield);
+        ed.claim_once();
         let v_lo = push_yield_v;
         let stride_hi = (v_hi * t_step).min(vxs_cap_of(v_hi));
         let stride_lo = (v_lo * t_step).min(vxs_cap_of(v_lo));
@@ -1081,37 +1116,37 @@ pub(crate) fn phase_dcm(
         // Every future landing advances by stride_lo instead of
         // stride_hi: the n-th future step is pulled back n * delta.
         let delta = stride_hi - stride_lo;
-        let i_now = plan.gait.index_at(t);
+        let i_now = ed.gait().index_at(t);
         let mut n = 0usize;
         let mut shift = [0.0_f64; 2];
-        for j in (i_now + 1)..plan.gait.slices.len() {
-            if let Some(sw) = plan.gait.slices[j].support.swing() {
+        for j in (i_now + 1)..ed.gait().slices.len() {
+            if let Some(sw) = ed.gait().slices[j].support.swing() {
                 n += 1;
                 shift[sw] = n as f64 * delta;
             }
-            if j < plan.footsteps.at.len() {
+            if j < ed.footsteps().at.len() {
                 for side in 0..2 {
-                    plan.footsteps.at[j].sole[side].x -= shift[side];
+                    ed.footsteps_mut().at[j].sole[side].x -= shift[side];
                 }
             }
         }
         // And every future slice runs at the slower speed's duration.
-        for j in (i_now + 1)..plan.gait.slices.len() {
-            let t0 = plan.gait.slices[j].t0;
-            let d = plan.gait.slices[j].duration() * ratio;
-            plan.gait.retime(j, t0 + d);
+        for j in (i_now + 1)..ed.gait().slices.len() {
+            let t0 = ed.gait().slices[j].t0;
+            let d = ed.gait().slices[j].duration() * ratio;
+            ed.retime(j, t0 + d);
         }
-        plan.rebuild_dcm();
+        ed.commit();
         stats.n_replan += 1;
         if debug.replan { outln!(out, "  [diag-replan] site 0 t={t:.3} (line 6798)"); }
         outln!(out, "  [yield] t={t:.3} dcm_err={dcm_err:.3}: speed {v_hi:.2} -> {v_lo:.2} m/s, stride {stride_hi:.3} -> {stride_lo:.3}, slices x{ratio:.3}, {n} steps re-planned");
     }
     if push_replan_trig > 0.0 {
-        let i = plan.gait.index_at(t);
-        let sl = plan.gait.slices[i].clone();
+        let i = plan.gait().index_at(t);
+        let sl = plan.gait().slices[i].clone();
         match sl.support {
             Support::Single { swing, stance }
-                if ctl.ref_mode.is_none()
+                if !claim_check!(plan.claims().whole_owner() == Some(Writer::RecoveryRef), ctl.ref_mode.is_some())
                     // Not on a known staircase (its zone, with the crouch
                     // lead / tail): a deep step-down reads as a backward
                     // error and the re-plan cost the -150 mm descent
@@ -1121,7 +1156,7 @@ pub(crate) fn phase_dcm(
                         // at x = 2 m) is not a staircase.
                         (st.riser.abs() > 1e-6 || st.down_n > 0)
                             && crate::height::stair_zone_crouch(
-                            plan.footsteps.at_slice(i).mid_xy().x,
+                            plan.footsteps().at_slice(i).mid_xy().x,
                             st,
                             stair_crouch_lead,
                             stair_crouch_tail,
@@ -1137,7 +1172,7 @@ pub(crate) fn phase_dcm(
                     // second firing steps back off the slope). 0 = off.
                     && !(push_replan_slope_lead > 0.0
                         && stairs.as_ref().is_some_and(|st| {
-                            let x = plan.footsteps.at_slice(i).mid_xy().x;
+                            let x = plan.footsteps().at_slice(i).mid_xy().x;
                             st.n == 0
                                 && st.slope != 0.0
                                 && x >= st.start - push_replan_slope_lead
@@ -1146,8 +1181,8 @@ pub(crate) fn phase_dcm(
             {
                 // The plan in force when this single support began.
                 if ctl.push_replan_state.as_ref().is_none_or(|st| st.0 != i) {
-                    let base = plan.footsteps.at_slice(i).xy(swing);
-                    ctl.push_replan_state = Some((i, plan.footsteps.clone(), plan.dcm.clone(), base, None));
+                    let base = plan.footsteps().at_slice(i).xy(swing);
+                    ctl.push_replan_state = Some((i, plan.footsteps().clone(), plan.dcm().clone(), base, None));
                 }
                 let frac = (t - sl.t0) / sl.duration().max(1e-9);
                 let rem = (sl.t1 - t).clamp(0.0, gp.t_ss);
@@ -1176,7 +1211,11 @@ pub(crate) fn phase_dcm(
                         && !v_now.is_some_and(|v| v > push_replan_vmax);
                     // (PUSH_REPLAN_LAT, the outward lateral step too, is
                     // removed.)
-                    if ctl.push_replan_slice == Some(i)
+                    let owns_landing = claim_check!(
+                        plan.claims().landing_owner(i) == Some(Writer::PushReplan),
+                        ctl.push_replan_slice == Some(i)
+                    );
+                    if owns_landing
                         || (back_ok && d.norm() > push_replan_trig && e.norm() > push_replan_emin)
                     {
                         let st = orig_fs.at_slice(i).xy(stance);
@@ -1203,10 +1242,12 @@ pub(crate) fn phase_dcm(
                         l.y = st.y + side * w;
                         if !inward_skip && last.is_none_or(|p| (p - l).norm() > 0.005) {
                             let mut fs = orig_fs.clone();
-                            fs.replan_from_landing(&plan.gait, i, swing, l, push_replan_stand, push_replan_ramp);
-                            plan.footsteps = fs;
-                            plan.rebuild_dcm();
-                            if ctl.push_replan_slice != Some(i) {
+                            fs.replan_from_landing(plan.gait(), i, swing, l, push_replan_stand, push_replan_ramp);
+                            let mut ed = plan.edit(Writer::PushReplan);
+                            ed.replace_footsteps(fs);
+                            ed.claim_landing(i);
+                            ed.commit();
+                            if !owns_landing {
                                 stats.n_push_replan += 1;
                                 stats.n_replan += 1;
                                 if debug.replan { outln!(out, "  [diag-replan] site 1 t={t:.3} (line 6901)"); }
@@ -1233,7 +1274,7 @@ pub(crate) fn phase_dcm(
     if push_z_drop > 0.0
         && back_err < -push_z_drop_trig
         && (xi - r.xi).y.abs() < push_z_drop_lat_max
-        && ctl.ref_mode.is_none()
+        && !claim_check!(plan.claims().whole_owner() == Some(Writer::RecoveryRef), ctl.ref_mode.is_some())
         && t >= ctl.push_z_drop_until
     {
         ctl.push_z_drop_until = t + push_z_drop_t;
@@ -1244,7 +1285,7 @@ pub(crate) fn phase_dcm(
     // side exceeds REF_TRIG_DCM in single support (the detector).
     // (REF_SLOPE_GATE, no reference on a known slope, is removed.)
     if ref_any
-        && ctl.ref_mode.is_none()
+        && !claim_check!(plan.claims().whole_owner() == Some(Writer::RecoveryRef), ctl.ref_mode.is_some())
         && t >= ctl.ref_cooldown_until
         && slice_frac <= ref_trig_max_frac
         && let Support::Single { stance, swing } = support
@@ -1266,11 +1307,11 @@ pub(crate) fn phase_dcm(
             // on the flat in-place gait the apex comes late, so the
             // height does not order the phases.)
             // Phase AT THE PUSH (the detector fires tau0 later).
-            let frac_push = slice_frac - tau0 / plan.gait.slices[slice_idx].duration().max(1e-6);
+            let frac_push = slice_frac - tau0 / plan.gait().slices[slice_idx].duration().max(1e-6);
             // Nearest walking speed first (the commanded speed once the
             // speed change has ramped in, else the nominal), then phase.
             let v_now = match vx2_change {
-                Some((at, v2, ramp2)) if plan.gait.steps_taken(t) >= at + ramp2 => v2,
+                Some((at, v2, ramp2)) if plan.gait().steps_taken(t) >= at + ramp2 => v2,
                 _ => vx,
             };
             let pick = (0..ref_libs.len())
@@ -1289,17 +1330,18 @@ pub(crate) fn phase_dcm(
             // double support after it (every DS slice up to the next
             // single support) gets phases[1]; the next single support
             // phases[2]; the double support after that phases[3].
+            let mut ed = plan.edit(Writer::RecoveryRef);
             let i0 = slice_idx;
             let mut j = i0;
             let mut ph = 0usize;
             let mut t_cursor = t;
             let mut first_ss_after: Option<usize> = None;
-            while j < plan.gait.slices.len() && ph < lib.phases.len() {
-                let is_ss = matches!(plan.gait.slices[j].support, Support::Single { .. });
+            while j < ed.gait().slices.len() && ph < lib.phases.len() {
+                let is_ss = matches!(ed.gait().slices[j].support, Support::Single { .. });
                 // Count the slices of this phase (DS phases may be split).
                 let mut jend = j + 1;
                 if !is_ss {
-                    while jend < plan.gait.slices.len() && matches!(plan.gait.slices[jend].support, Support::Double) {
+                    while jend < ed.gait().slices.len() && matches!(ed.gait().slices[jend].support, Support::Double) {
                         jend += 1;
                     }
                 }
@@ -1307,7 +1349,7 @@ pub(crate) fn phase_dcm(
                 for jj in j..jend {
                     let remaining = if ph == 0 { (lib.phases[0] - tau0).max(0.05) } else { lib.phases[ph] };
                     let end = t_cursor + remaining / n;
-                    plan.gait.retime(jj, end);
+                    ed.retime(jj, end);
                     t_cursor = end;
                 }
                 if is_ss && j != i0 && first_ss_after.is_none() {
@@ -1328,24 +1370,25 @@ pub(crate) fn phase_dcm(
                 t_end += dur;
                 if ph % 2 == 0 {
                     // find the single-support slice of this phase
-                    while jj < plan.gait.slices.len() && plan.gait.slices[jj].support.swing().is_none() {
+                    while jj < ed.gait().slices.len() && ed.gait().slices[jj].support.swing().is_none() {
                         jj += 1;
                     }
-                    if jj >= plan.gait.slices.len() {
+                    if jj >= ed.gait().slices.len() {
                         break;
                     }
                     let foot = mode.foot(ref_sw);
                     let land = mode.world(lib, lib.sole_at(ref_sw, t_end));
-                    let d = (land - plan.footsteps.at_slice(jj).sole[foot]).xy();
-                    plan.footsteps.shift_next(jj, foot, d);
+                    let d = (land - ed.footsteps().at_slice(jj).sole[foot]).xy();
+                    ed.shift_next(jj, foot, d);
                     if ph == 0 { land1 = land; } else if ph == 2 { land2 = land; }
                     ref_sw = 1 - ref_sw;
                     jj += 1;
                 }
             }
             let _ = first_ss_after;
-            plan.rebuild_dcm();
-            plan.landing.event_mode = true;
+            ed.landing_mut().event_mode = true;
+            ed.claim_whole();
+            ed.commit();
             ctl.ref_mode = Some(mode);
             stats.ref_engagements += 1;
             outln!(out, 
@@ -1415,24 +1458,24 @@ pub(crate) fn phase_cmd_zmp(
 
     // ---- contact plan (CONTACT_PLAN) --------------------------------
     if contact_plan_on
-        && ctl.ref_mode.is_none()
+        && !claim_check!(plan.claims().whole_owner() == Some(Writer::RecoveryRef), ctl.ref_mode.is_some())
         && let Support::Single { swing, .. } = support
         && dcm_err >= contact_plan_trig
     {
-        let i = plan.gait.index_at(t);
+        let i = plan.gait().index_at(t);
         if ctl.cp_slice != Some(i) {
             ctl.cp_slice = Some(i);
             ctl.cp_applied = na::Vector2::zeros();
         }
-        let seg = &plan.dcm.segs[plan.dcm.index_at(t)];
+        let seg = &plan.dcm().segs[plan.dcm().index_at(t)];
         let sit = crate::contact_plan::Situation {
             xi,
             p: seg.at(t),
             p_dot: seg.slope(),
             omega,
             t,
-            nominal_end: plan.gait.slices[i].t1,
-            xi_eos_plan: plan.dcm.eos_at(t),
+            nominal_end: plan.gait().slices[i].t1,
+            xi_eos_plan: plan.dcm().eos_at(t),
             swing_sign: if swing == 0 { 1.0 } else { -1.0 },
         };
         // (CP_J_AUTO, the sensitivity differenced from the plan, and
@@ -1453,7 +1496,7 @@ pub(crate) fn phase_cmd_zmp(
         // does not predict survival at the 60 mm riser, and snapping to
         // the window edge took 26/32 -> 17/32. Removed; terrain awareness
         // belongs in a cost with margin, not a snap to an edge.)
-        let mut rebuilt = false;
+        let mut ed = plan.edit(Writer::ContactPlan);
         // Like ADAPT_STEP did: place the foot once per step, keeping the
         // largest demand seen, instead of re-placing it every tick.
         //
@@ -1471,7 +1514,7 @@ pub(crate) fn phase_cmd_zmp(
         } else {
             na::Vector2::zeros()
         };
-        if d.norm() > 1e-9 && !plan.landing.landing_closed(i) {
+        if d.norm() > 1e-9 && !ed.landing_closed(i) {
             // `shift_from` shifts the swing foot's landing in slice `i`
             // AND every later slice, so the adjusted position becomes the
             // nominal that the NEXT step's residual is measured against.
@@ -1479,27 +1522,26 @@ pub(crate) fn phase_cmd_zmp(
             // step (measured 2026-09-25: lateral spacing 127 -> 153 mm
             // median against a 30 mm limit). CP_SHIFT_NEXT, moving only
             // this landing, was not adopted and is removed.
-            plan.footsteps.shift_from(i, swing, d);
+            ed.shift_from(i, swing, d);
             ctl.cp_applied = dec.shift;
             stats.n_cp_shift += 1;
-            rebuilt = true;
         }
         if let Some(ne) = dec.new_end
             && ne > t + dt
-            && ctl.cp_retimed_slice != Some(i)
+            && !claim_check!(ed.claims().end_time_owner(i) == Some(Writer::ContactPlan), ctl.cp_retimed_slice == Some(i))
         {
-            let dd = plan.gait.retime(i, ne);
+            let dd = ed.retime(i, ne);
             stats.n_cp_retime += 1;
             stats.cp_retime_total += dd.abs();
             ctl.cp_retimed_slice = Some(i);
+            ed.claim_end_time(i);
             // The planner has now set this step's end; the landing
             // extension must not move it again (the two would fight
             // over the same boundary, and extension IS mechanism B).
-            plan.landing.max_extension = 0.0;
-            rebuilt = true;
+            ed.landing_mut().max_extension = 0.0;
         }
-        if rebuilt {
-            plan.rebuild_dcm();
+        // Rebuilt iff the landing moved or the end was set.
+        if ed.commit() {
             stats.n_replan += 1;
             if debug.replan { outln!(out, "  [diag-replan] site 2 t={t:.3} (line 7454)"); }
         }
@@ -1557,16 +1599,16 @@ pub(crate) fn phase_preview(
                 let begin = t + k as f64 * com_preview_dt;
                 let end = begin + com_preview_dt;
                 let f0 = crate::preview::forecast_feet(
-                    &plan.gait,
-                    &plan.footsteps,
+                    &plan.gait(),
+                    &plan.footsteps(),
                     &actual,
                     &stance_sides,
                     t,
                     begin,
                 );
                 let f1 = crate::preview::forecast_feet(
-                    &plan.gait,
-                    &plan.footsteps,
+                    &plan.gait(),
+                    &plan.footsteps(),
                     &actual,
                     &stance_sides,
                     t,
@@ -1574,13 +1616,13 @@ pub(crate) fn phase_preview(
                 );
                 let b0 = SupportBox::from_stance_yawed(
                     &f0,
-                    plan.gait.support_at(begin),
+                    plan.gait().support_at(begin),
                     (sole_half_l * cop_frac, sole_half_w * cop_frac),
                     zmp_margin,
                 );
                 let b1 = SupportBox::from_stance_yawed(
                     &f1,
-                    plan.gait.support_at(end - 1e-9),
+                    plan.gait().support_at(end - 1e-9),
                     (sole_half_l * cop_frac, sole_half_w * cop_frac),
                     zmp_margin,
                 );
@@ -1595,8 +1637,8 @@ pub(crate) fn phase_preview(
                     };
                 }
                 let (zmp_ref, xi_ref) = (
-                    plan.dcm.reference(begin + 0.5 * com_preview_dt).p,
-                    plan.dcm.reference(end).xi,
+                    plan.dcm().reference(begin + 0.5 * com_preview_dt).p,
+                    plan.dcm().reference(end).xi,
                 );
                 samples.push(crate::preview::PreviewSample {
                     duration: com_preview_dt,
@@ -1772,7 +1814,7 @@ pub(crate) fn phase_height(
         // turns the staircase of slice targets into a near-constant
         // slope; no gating on support phase (a DS-only ramp was tried
         // and left the reference a riser behind the feet by tread 2).
-        let fs = plan.footsteps.at_slice(slice_idx);
+        let fs = plan.footsteps().at_slice(slice_idx);
         // The mean planned sole height (STAIR_DESC_MIN, the lower of the
         // two on a descent, is removed).
         let tgt_h = 0.5 * (fs.sole[0].z + fs.sole[1].z);
@@ -1792,7 +1834,7 @@ pub(crate) fn phase_height(
     } else {
         0.0
     };
-    let (z_ref, zd_ref, zdd_ref) = if ctl.replan_engaged && com_height_replan && plan.landing.clock.is_some() {
+    let (z_ref, zd_ref, zdd_ref) = if ctl.replan_engaged && com_height_replan && plan.landing().clock.is_some() {
         // Where the CoM height aims while BOTH feet count: historically
         // the mean sole height. Measured 2026-09-24 on the 80 mm riser
         // with the landed foot admitted at the start of double support
@@ -1813,10 +1855,10 @@ pub(crate) fn phase_height(
         // The landing this swing is heading for, or -- in a double
         // support -- the landing of the swing that follows it.
         let next_landing = {
-            let i = plan.gait.index_at(t);
-            (i..plan.gait.slices.len().min(i + 4))
-                .find_map(|j| plan.gait.slices[j].support.swing().map(|sw| (j, sw)))
-                .map(|(j, sw)| (sw, plan.footsteps.at_slice(j).sole[sw]))
+            let i = plan.gait().index_at(t);
+            (i..plan.gait().slices.len().min(i + 4))
+                .find_map(|j| plan.gait().slices[j].support.swing().map(|sw| (j, sw)))
+                .map(|(j, sw)| (sw, plan.footsteps().at_slice(j).sole[sw]))
         };
         let h = hr::descent_lead(h, next_landing.map(|(_, l)| l.z), com_height_desc_lead);
         let crouch = match &stairs {
@@ -1831,10 +1873,12 @@ pub(crate) fn phase_height(
         // (REACH_HEIGHT / _FLOOR, the height capped by the legs' reach
         // over every sole, and COM_HEIGHT_DESC_REACH, the same cap for
         // the landing of a descent, were not adopted and are removed.)
-        if (target - plan.height.target).abs() > 1e-6 {
-            plan.height.retarget(t, target, com_height_time);
+        if (target - plan.height().target).abs() > 1e-6 {
+            let mut ed = plan.edit(Writer::Height);
+            ed.height_mut().retarget(t, target, com_height_time);
+            ed.commit();
         }
-        plan.height.at(t)
+        plan.height().at(t)
     } else if squat_amp > 0.0 {
         let w = 2.0 * PI / squat_period;
         let ph = w * t;
@@ -2051,7 +2095,7 @@ pub(crate) fn phase_wrench_mpc(
             // from the gait.
             let high = usize::from(!stance_sides.contains(&0));
             // The height reference is the walk's own.
-            let (hz, hzd, _) = plan.height.at(t + horizon_time);
+            let (hz, hzd, _) = plan.height().at(t + horizon_time);
             target_com.z = hz;
             target_velocity.z = hzd;
             let low = 1 - high;
@@ -2083,8 +2127,8 @@ pub(crate) fn phase_wrench_mpc(
                 // is the schedule the walk is already executing, so the
                 // MPC predicts the motion rather than a primitive.
                 let high_share = {
-                    let idx = plan.gait.index_at(t + stage_dt);
-                    match plan.gait.slices[idx].support.swing() {
+                    let idx = plan.gait().index_at(t + stage_dt);
+                    match plan.gait().slices[idx].support.swing() {
                         None => 0.5,
                         Some(sw) => {
                             if sw == high {
@@ -2164,8 +2208,8 @@ pub(crate) fn phase_wrench_mpc(
             if wrench_mpc_apply {
                 let end = t + stair_wrench_horizon as f64 * stair_wrench_preview_dt;
                 let fc = crate::preview::forecast_feet(
-                    &plan.gait,
-                    &plan.footsteps,
+                    &plan.gait(),
+                    &plan.footsteps(),
                     &actual,
                     &stance_sides,
                     t,
@@ -2195,14 +2239,14 @@ pub(crate) fn phase_wrench_mpc(
             let cross_now: Option<(usize, bool)> = if mpc_footstep_cross_y > 0.0
                 && let Support::Single { swing: sw_c, .. } = support
             {
-                let i = plan.gait.index_at(t);
+                let i = plan.gait().index_at(t);
                 if let Some((li, lp)) = ctl.mpc_fs_cross_latched
                     && li == i
                 {
                     Some((li, lp))
                 } else {
                     let stance_c = 1 - sw_c;
-                    let f = plan.footsteps.at_slice(i);
+                    let f = plan.footsteps().at_slice(i);
                     // The stance foot lies at +y of the swing foot.
                     let plus = f.sole[stance_c].y > f.sole[sw_c].y;
                     let ex = (xi.y - f.sole[stance_c].y) * if plus { 1.0 } else { -1.0 };
@@ -2223,11 +2267,11 @@ pub(crate) fn phase_wrench_mpc(
             let inward_bound = |i: usize| -> (f64, bool) {
                 let (_, plus) = support
                     .swing()
-                    .map(|sw| landing_inward(&plan.footsteps, i, sw))
+                    .map(|sw| landing_inward(&plan.footsteps(), i, sw))
                     .unwrap_or((0.0, true));
                 let mut b = mpc_footstep_max_y_in;
                 if mpc_footstep_y_in_fwd > 0.0
-                    && xi.x - plan.dcm.reference(t).xi.x >= mpc_footstep_y_in_fwd_trig
+                    && xi.x - plan.dcm().reference(t).xi.x >= mpc_footstep_y_in_fwd_trig
                 {
                     b = b.max(mpc_footstep_y_in_fwd);
                 }
@@ -2239,11 +2283,14 @@ pub(crate) fn phase_wrench_mpc(
                 (b, plus)
             };
             let landing = if mpc_footstep
-                && ctl.push_replan_slice != Some(plan.gait.index_at(t))
+                && !claim_check!(
+                    plan.claims().landing_owner(plan.gait().index_at(t)) == Some(Writer::PushReplan),
+                    ctl.push_replan_slice == Some(plan.gait().index_at(t))
+                )
                 && wrench_mpc_apply
                 && let Support::Single { swing, .. } = support
                 && {
-                    let i = plan.gait.index_at(t);
+                    let i = plan.gait().index_at(t);
                     if mpc_footstep_trig > 0.0
                         && dcm_err >= mpc_footstep_trig
                         && !ctl.mpc_fs_armed.is_some_and(|(a, u)| a <= i && i <= u)
@@ -2260,13 +2307,14 @@ pub(crate) fn phase_wrench_mpc(
                     // Event mode: no landing moves while the foot is
                     // probing for the ground (measured 2026-10-04: the
                     // goal moved 5-12 cm under a foot 2 cm from contact).
-                    !plan.landing.landing_closed(plan.gait.index_at(t)) && ctl.ref_mode.is_none()
+                    !plan.landing_closed(plan.gait().index_at(t))
+                        && !claim_check!(plan.claims().whole_owner() == Some(Writer::RecoveryRef), ctl.ref_mode.is_some())
                 }
             {
                 (0..stair_wrench_horizon)
                     .find(|&k| {
                         let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
-                        match plan.gait.support_at(at) {
+                        match plan.gait().support_at(at) {
                             Support::Double => true,
                             Support::Single { swing: sw, .. } => sw != swing,
                         }
@@ -2280,7 +2328,7 @@ pub(crate) fn phase_wrench_mpc(
                         terrain_x: None,
                         weight: mpc_footstep_w,
                         max: {
-                            let i = plan.gait.index_at(t);
+                            let i = plan.gait().index_at(t);
                             let (inward, inward_is_plus) = inward_bound(i);
                             let mut m = mpc_footstep_max;
                             if inward_is_plus {
@@ -2292,7 +2340,7 @@ pub(crate) fn phase_wrench_mpc(
                         // (MPC_FOOTSTEP_INCREMENT removed).
                         prior: [0.0; 2],
                         min: {
-                            let i = plan.gait.index_at(t);
+                            let i = plan.gait().index_at(t);
                             // (MPC_FOOTSTEP_STAIR_BACK, inf by default, removed.)
                             let mut m = mpc_footstep_max;
                             let (inward, inward_is_plus) = inward_bound(i);
@@ -2306,12 +2354,12 @@ pub(crate) fn phase_wrench_mpc(
                         // Crossing: the LIPM capture floor on the inward shift.
                         if mpc_footstep_cross_floor > 0.0
                             && let Some((ci, cplus)) = cross_now
-                            && ci == plan.gait.index_at(t)
+                            && ci == plan.gait().index_at(t)
                         {
-                            let sl = &plan.gait.slices[ci];
+                            let sl = &plan.gait().slices[ci];
                             let rem = (sl.t1 - t).max(0.0);
                             let sgn = if cplus { 1.0 } else { -1.0 };
-                            let stance_y = plan.footsteps.at_slice(ci).sole[1 - land.foot].y;
+                            let stance_y = plan.footsteps().at_slice(ci).sole[1 - land.foot].y;
                             let edge = stance_y + sgn * sole_half_w;
                             let xi_td = edge + (xi.y - edge) * (omega * rem).exp();
                             // The ORIGINAL landing: the contact position already
@@ -2364,7 +2412,7 @@ pub(crate) fn phase_wrench_mpc(
                     (0..stair_wrench_horizon)
                         .map(|k| {
                             let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
-                            match plan.gait.support_at(at) {
+                            match plan.gait().support_at(at) {
                                 Support::Double => [true, true],
                                 Support::Single { swing, .. } => [swing != 0, swing != 1],
                             }
@@ -2402,7 +2450,7 @@ pub(crate) fn phase_wrench_mpc(
                     (0..stair_wrench_horizon)
                         .map(|k| {
                             let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
-                            plan.dcm.reference(at).p
+                            plan.dcm().reference(at).p
                         })
                         .collect()
                 }),
@@ -2411,7 +2459,7 @@ pub(crate) fn phase_wrench_mpc(
                     (0..stair_wrench_horizon)
                         .map(|k| {
                             let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
-                            plan.dcm.reference(at).xi
+                            plan.dcm().reference(at).xi
                         })
                         .collect()
                 }),
@@ -2424,11 +2472,11 @@ pub(crate) fn phase_wrench_mpc(
                     .then(|| landing)
                     .flatten()
                     .map(|land| {
-                        let i = plan.gait.index_at(t);
+                        let i = plan.gait().index_at(t);
                         let du = 0.02;
                         let mut cols = [Vec::new(), Vec::new()];
                         for axis in 0..2 {
-                            let mut probe = plan.footsteps.clone();
+                            let mut probe = plan.footsteps().clone();
                             let mut d = na::Vector2::zeros();
                             d[axis] = du;
                             // The sensitivity describes the plan the shift
@@ -2438,7 +2486,7 @@ pub(crate) fn phase_wrench_mpc(
                             cols[axis] = (0..stair_wrench_horizon)
                                 .map(|k| {
                                     let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
-                                    (moved.reference(at).xi - plan.dcm.reference(at).xi) / du
+                                    (moved.reference(at).xi - plan.dcm().reference(at).xi) / du
                                 })
                                 .collect();
                         }
@@ -2543,9 +2591,9 @@ pub(crate) fn phase_wrench_mpc(
                     // MPC_LEX_DEBUG_* prints went with MPC_CAPTURE_LEX.)
                     if let Some(dp) = solution.landing_shift
                         && let Some(land) = landing
-                        && !plan.landing.landing_closed(plan.gait.index_at(t))
+                        && !plan.landing_closed(plan.gait().index_at(t))
                     {
-                        let i = plan.gait.index_at(t);
+                        let i = plan.gait().index_at(t);
                         if ctl.mpc_fs_slice != Some(i) {
                             ctl.mpc_fs_slice = Some(i);
                             ctl.mpc_fs_applied = na::Vector2::zeros();
@@ -2556,25 +2604,26 @@ pub(crate) fn phase_wrench_mpc(
                             outln!(out, 
                                 "  [fs-decision] t={t:.3} first_node={} prior=({:+.3},{:+.3}) dp=({:+.3},{:+.3}) total=({:+.3},{:+.3}) max={:?} min={:?} xi-ref=({:+.3},{:+.3})",
                                 land.first_node, land.prior[0], land.prior[1], dp.x, dp.y, total.x, total.y, land.max, land.min,
-                                xi.x - plan.dcm.reference(t).xi.x, xi.y - plan.dcm.reference(t).xi.y
+                                xi.x - plan.dcm().reference(t).xi.x, xi.y - plan.dcm().reference(t).xi.y
                             );
                         }
                         if d.norm() > 1e-6 {
-                            plan.footsteps.shift_next(i, land.foot, d);
+                            let mut ed = plan.edit(Writer::MpcLanding);
+                            ed.shift_next(i, land.foot, d);
                             ctl.mpc_fs_applied = total;
-                            plan.rebuild_dcm();
+                            ed.commit();
                             stats.n_replan += 1;
                             if debug.replan { outln!(out, "  [diag-replan] site 6 t={t:.3} (line 9380)"); }
                         }
                     }
                     if debug.mpc_traj && t < 2.0 {
                         let xi0 = com.xy() + com_vel.xy() / omega;
-                        let r0 = plan.dcm.reference(t);
+                        let r0 = plan.dcm().reference(t);
                         let mut line = format!("  [traj] t={t:.3} xi_meas=({:+.3},{:+.3}) xi_plan=({:+.3},{:+.3}) tgt=({:+.3},{:+.3}) |",
                             xi0.x, xi0.y, r0.xi.x, r0.xi.y, target_com.x, target_com.y);
                         for (k, [c, v]) in solution.trajectory.iter().enumerate() {
                             let xi = c.xy() + v.xy() / omega;
-                            let rp = plan.dcm.reference(t + (k as f64 + 1.0) * stair_wrench_preview_dt);
+                            let rp = plan.dcm().reference(t + (k as f64 + 1.0) * stair_wrench_preview_dt);
                             line += &format!(" k{k}: pred({:+.3},{:+.3}) plan({:+.3},{:+.3})", xi.x, xi.y, rp.xi.x, rp.xi.y);
                         }
                         out.line(&line);
@@ -2900,7 +2949,7 @@ pub(crate) fn phase_task_refs(
     // foot that will carry the rotation is even down.
     let yaw_plan = {
         let mean = |i: usize| {
-            let y = plan.footsteps.at_slice(i).yaw;
+            let y = plan.footsteps().at_slice(i).yaw;
             0.5 * (y[0] + y[1])
         };
         let prev = mean(slice_idx.saturating_sub(1));
@@ -3166,7 +3215,7 @@ pub(crate) fn phase_task_refs(
             // within a millimetre, and using the measured one keeps a foot
             // that started slightly high from being driven into the floor.
             // With stride 0 this is exactly "land where you took off".
-            let plan_xy = plan.footsteps.at_slice(slice_idx).sole[side];
+            let plan_xy = plan.footsteps().at_slice(slice_idx).sole[side];
             // On stairs the surfaces differ in height; carry the CHANGE
             // in surface height on top of the measured lift-off z, so a
             // foot that started a few millimetres high keeps its offset
@@ -3179,7 +3228,7 @@ pub(crate) fn phase_task_refs(
                 .as_ref()
                 .map_or(0.0, |st| st.h(plan_xy.x) - st.h(lift_off.x));
             let dz = if (stair_absolute_td || (stair_absolute_td_desc && plan_dz_sign < -1e-9)) && stairs.is_some() {
-                plan_xy.z - plan.footsteps.at_slice(slice_idx.saturating_sub(1)).sole[side].z
+                plan_xy.z - plan.footsteps().at_slice(slice_idx.saturating_sub(1)).sole[side].z
             } else {
                 stairs
                     .as_ref()
@@ -3188,7 +3237,7 @@ pub(crate) fn phase_task_refs(
             let touch_down = if (stair_absolute_td || (stair_absolute_td_desc && dz < -1e-9)) && dz.abs() > 1e-9 {
                 // The target is a surveyed tread, not the measured height
                 // of the previous (possibly rocking) foot plus a riser.
-                let offset = foot_rot_at(side, plan.footsteps.at_slice(slice_idx).yaw[side])
+                let offset = foot_rot_at(side, plan.footsteps().at_slice(slice_idx).yaw[side])
                     * na::Vector3::new(prof.sole_centre_x, 0.0, -prof.sole_below_origin);
                 plan_xy - offset
             } else {
@@ -3213,7 +3262,7 @@ pub(crate) fn phase_task_refs(
                 // every existing result bit-identical.
                 let mut td = na::Vector3::new(plan_xy.x, plan_xy.y, lift_off.z + dz);
                 if stair_td_sole_frame {
-                    let off = foot_rot_at(side, plan.footsteps.at_slice(slice_idx).yaw[side])
+                    let off = foot_rot_at(side, plan.footsteps().at_slice(slice_idx).yaw[side])
                         * na::Vector3::new(prof.sole_centre_x, 0.0, 0.0);
                     td.x -= off.x;
                     td.y -= off.y;
@@ -3231,7 +3280,7 @@ pub(crate) fn phase_task_refs(
             // smoothstep, so velocity is zero at every joint and the
             // feedforward stays continuous.
             let (swing_fraction, swing_duration) = if com_replan {
-                plan.landing
+                plan.landing()
                     .clock
                     .filter(|(i, _, _)| *i == slice_idx)
                     .map(|(_, start, duration)| {
@@ -3396,7 +3445,10 @@ pub(crate) fn phase_task_refs(
                     (pos0, vel0, na::Vector3::zeros())
                 };
             let replan_hold = push_replan_trig > 0.0
-                && ctl.push_replan_slice == Some(slice_idx)
+                && claim_check!(
+                    plan.claims().landing_owner(slice_idx) == Some(Writer::PushReplan),
+                    ctl.push_replan_slice == Some(slice_idx)
+                )
                 && ctl.push_replan_shift > push_replan_hold;
             // 0.05: the default of PUSH_REPLAN_HOLD_Z (removed; the
             // champion turns the hold off with PUSH_REPLAN_HOLD=10).
@@ -3430,15 +3482,15 @@ pub(crate) fn phase_task_refs(
                 let tau = if ref_side == 1 && elapsed < first { elapsed * warp } else { elapsed + mode.tau0 };
                 let sole_w = mode.world(lib, lib.sole_at(ref_side, tau));
                 let sole_w1 = mode.world(lib, lib.sole_at(ref_side, tau + dt * warp));
-                let offset = foot_rot_at(side, plan.footsteps.at_slice(slice_idx).yaw[side])
+                let offset = foot_rot_at(side, plan.footsteps().at_slice(slice_idx).yaw[side])
                     * na::Vector3::new(prof.sole_centre_x, 0.0, -prof.sole_below_origin);
                 tgt = sole_w - offset;
                 tgt_v = (sole_w1 - sole_w) / dt;
             }
-            if plan.landing.probe_depth > 0.0
-                && plan.landing.clock.is_some_and(|(ci, _, _)| ci == slice_idx)
+            if plan.landing().probe_depth > 0.0
+                && plan.landing().clock.is_some_and(|(ci, _, _)| ci == slice_idx)
             {
-                tgt.z -= plan.landing.probe_depth;
+                tgt.z -= plan.landing().probe_depth;
             }
             swing_tgt = tgt;
             swing_cmd_acc_z = tgt_a.z * tracking_ff_scale
@@ -3452,7 +3504,7 @@ pub(crate) fn phase_task_refs(
             // through a height-changing swing, were opt-in -- the
             // champion sets 0 -- and are removed.)
             let axes = if terrain_pitch
-                && stairs.as_ref().is_some_and(|st| st.pitch_at(plan.footsteps.at_slice(slice_idx).sole[side].x) != 0.0)
+                && stairs.as_ref().is_some_and(|st| st.pitch_at(plan.footsteps().at_slice(slice_idx).sole[side].x) != 0.0)
             {
                 // TERRAIN_PITCH_YAW=1: keep the walking default's yaw
                 // and add pitch only, roll free (see SwingAxes::XyzYawPitch).
@@ -3467,9 +3519,9 @@ pub(crate) fn phase_task_refs(
             };
             let rot = {
                 let mut rot_tgt =
-                    foot_rot_at(side, plan.footsteps.at_slice(slice_idx).yaw[side]);
+                    foot_rot_at(side, plan.footsteps().at_slice(slice_idx).yaw[side]);
                 if terrain_pitch && let Some(st) = &stairs {
-                    let th = st.pitch_at(plan.footsteps.at_slice(slice_idx).sole[side].x);
+                    let th = st.pitch_at(plan.footsteps().at_slice(slice_idx).sole[side].x);
                     if th != 0.0 {
                         // Toe up by the slope angle: rotate about world y by -th.
                         rot_tgt = na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), -th).matrix() * rot_tgt;
@@ -3514,7 +3566,7 @@ pub(crate) fn phase_task_refs(
             };
             let rot = Some((
                 misarta::se3::rotation_matrix(&data.oMi[mi]),
-                foot_rot_at(side, plan.footsteps.at_slice(slice_idx).yaw[side]),
+                foot_rot_at(side, plan.footsteps().at_slice(slice_idx).yaw[side]),
                 na::Vector3::new(om3[0], om3[1], om3[2]),
                 kp_sw_rot,
                 kd_sw_rot,
@@ -3877,30 +3929,34 @@ pub(crate) fn phase_end_tick(ctl: &mut CtlState, plan: &mut Plan, cfg: &Config, 
     {
         ctl.ref_mode = None;
         ctl.ref_cooldown_until = t + ref_cooldown;
-        plan.landing.event_mode = event_mode_cfg;
+        let mut ed = plan.edit(Writer::RecoveryEnd);
+        ed.release_whole();
+        ed.landing_mut().event_mode = event_mode_cfg;
         // The reference leaves the feet where the recovery put them
         // (in tandem, narrow). Every later footfall is re-centred on the
         // feet as they are now, at the nominal stance width, so the gait
         // that resumes is the nominal one and not a stride-0 echo of the
         // recovery (measured: the echo fell 1.7 s after the reference).
         if ref_reset_stance {
-            let i = plan.gait.index_at(t);
-            let cur = *plan.footsteps.at_slice(i);
+            let i = ed.gait().index_at(t);
+            let cur = *ed.footsteps().at_slice(i);
             let mid = 0.5 * (cur.sole[0].xy() + cur.sole[1].xy());
-            let half_w = 0.5 * (plan.footsteps.initial.sole[0].y - plan.footsteps.initial.sole[1].y).abs();
+            let half_w = 0.5 * (ed.footsteps().initial.sole[0].y - ed.footsteps().initial.sole[1].y).abs();
             let j0 = if ref_reset_incl_current { i } else { i + 1 };
             for side in 0..2 {
                 let want = na::Vector2::new(mid.x, mid.y + if side == 0 { half_w } else { -half_w });
-                if let Some(j) = (j0..plan.gait.slices.len()).find(|&j| plan.gait.slices[j].support.swing() == Some(side)) {
+                if let Some(j) = (j0..ed.gait().slices.len()).find(|&j| ed.gait().slices[j].support.swing() == Some(side)) {
                     if j == i {
                         outln!(out, "  [ref] t={t:.3} re-centre the swing under way: foot {side} -> ({:.3},{:.3})", want.x, want.y);
                     }
-                    let d = want - plan.footsteps.at_slice(j).sole[side].xy();
-                    plan.footsteps.shift_from(j, side, d);
+                    let d = want - ed.footsteps().at_slice(j).sole[side].xy();
+                    ed.shift_from(j, side, d);
                 }
             }
-            plan.rebuild_dcm();
+            // Rebuilt even when neither foot had a later swing to move.
+            ed.touch();
         }
+        ed.commit();
         outln!(out, "  [ref] t={t:.3} reference over, back to the gait");
     }
 }
