@@ -3557,7 +3557,7 @@ pub(crate) fn phase_task_refs(
 
 /// Phase 11: the WBC request, and the solve by the stack (S12: the levels,
 /// their order and weights, the solve, the gate and QP_DIAG_DIR are the
-/// stack's, articara's `biped::wbc_stack::TaskStack`). The walker hands it
+/// stack's, `crate::task_stack::TaskStack` by default). The walker hands it
 /// phase 10's references and the contact request: the feet, the anchor
 /// events of phases 3 and 4 (in order), the load share per side, rigid or
 /// managed contact per side (STAIR_MANAGED_*), the slope's heel cut as a

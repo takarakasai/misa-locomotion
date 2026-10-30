@@ -13,10 +13,10 @@
 //! across ticks: the solver's warm start, the last QP structure and the
 //! contact anchors.
 //!
-//! articara's `TaskStack` (`articara::biped::wbc_stack`) implements it with
-//! the level builders of `biped::tasks` / `biped::contact` and
-//! `misa_wbc::Solver`; another runner (another QP, a real robot) can put its
-//! own stack behind the same request.
+//! [`crate::task_stack::TaskStack`] implements it with the level builders of
+//! [`crate::tasks`] / [`crate::contact`] and `misa_wbc::Solver` (articara
+//! re-exports it as `biped::wbc_stack`); another runner (another QP, a real
+//! robot) can put its own stack behind the same request.
 use crate::gait::Support;
 use crate::robot::{RobotModel, RobotState};
 use crate::sink::LogSink;
@@ -33,38 +33,9 @@ pub enum AnchorEvent {
     Touchdown { side: usize, pos: na::Vector3<f64>, rot: na::Matrix3<f64> },
 }
 
-/// How a stance foot's contact acceleration is held.
-#[derive(Clone, Copy, Debug)]
-pub enum ContactMode {
-    /// All six rows as one hard contact.
-    Rigid,
-    /// Normal recovery authoritative, a lightly loaded sole allowed to slide
-    /// and rotate enough to re-establish a physical contact (the managed
-    /// contact of the stair MPC).
-    Managed {
-        tangent_weight: f64,
-        rotation_weight: f64,
-        normal_weight: f64,
-        normal_accel_max: f64,
-    },
-}
-
-/// Which rows of the swing foot's pose are tracked.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SwingAxes {
-    /// Clearance only.
-    ZOnly,
-    /// Full 3-D position.
-    Xyz,
-    /// Position and yaw.
-    XyzYaw,
-    /// Position, roll and pitch.
-    XyzRollPitch,
-    /// Position, yaw and pitch.
-    XyzYawPitch,
-    /// The full 6-D pose.
-    Pose,
-}
+/// How a stance foot's contact is held and which rows of the swing foot's
+/// pose are tracked: the level builders' own types (one copy since S13d).
+pub use crate::tasks::{ContactMode, SwingAxes};
 
 /// A foot's CoP box moved and shrunk: the sole point in the foot frame and
 /// the box's half-extents (x, y).
@@ -75,7 +46,7 @@ pub type CopPatch = ([f64; 3], (f64, f64));
 /// per-foot force ceiling and the control period. Fixed at start-up; the
 /// walker reads the CoP box and the torsion coefficient too (the MPC plans
 /// against the same contact), so it is built on the walker's side and handed
-/// to the stack.
+/// to the stack. The level builders know it as [`crate::tasks::ContactCfg`].
 #[derive(Clone, Debug)]
 pub struct ContactParams {
     pub kp_c: f64,
@@ -89,7 +60,8 @@ pub struct ContactParams {
     pub cop_half: (f64, f64),
     pub mu_torsion: f64,
     pub f_max_per_foot: f64,
-    /// Drop the contact patch (the CoP box and the friction cone) entirely.
+    /// Drop the contact patch (the CoP box and the friction cone) entirely,
+    /// to test whether the CoP box is what is binding.
     pub no_patch: bool,
     pub dt: f64,
 }
