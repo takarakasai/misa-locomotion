@@ -138,7 +138,10 @@ pub(crate) struct TickObs<'a> {
     pub tick: usize,
     pub state: &'a RobotState,
     pub contact_fz: [f64; 2],
-    pub joint_pos_plant: &'a [f64],
+    /// The joint angles the posture and arm-hold levels read (harness
+    /// order): the plant's `Observation::joint_pos_plant` (LEAK), or the
+    /// estimate's `joint_q` under `JOINT_Q_EST`.
+    pub joint_pos: &'a [f64],
 }
 
 /// The tick's assembled state.
@@ -3703,7 +3706,7 @@ pub(crate) fn phase_wbc(
         momentum: refs.mom.as_ref(),
         mom_cmp: refs.cmp.as_ref().map(|r| MomCmp { cmm: cent.cmm(), r }),
         arm_hold: refs.arm.as_ref(),
-        joint_pos: obs.joint_pos_plant,
+        joint_pos: obs.joint_pos,
         tau_gravity: &refs.tau_gravity,
         shares: &refs.shares,
         // The MPC's wrenches replace (MPC_SOLE_AUTHORITY, double support

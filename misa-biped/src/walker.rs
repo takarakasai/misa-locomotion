@@ -249,11 +249,13 @@ pub struct WalkerSetup {
     pub recovery_refs: Vec<RefLib>,
     /// LEAK (§6.7): the WBC's and the MPC's friction coefficient,
     /// `cfg.wbc.friction_mu(MU_GROUND, ..)` -- built from the PLANT's floor
-    /// friction.
+    /// friction, unless `cfg.wbc.mu_assumed` (`MU_ASSUMED`) replaces it.
     pub friction_mu: f64,
     /// LEAK (§6.6): the forward kinematics of the settled pose from the
     /// PLANT's joint angles (`rig.fk_now()`): the initial footsteps, the
-    /// initial CoM and the feet's planned orientation come from it.
+    /// initial CoM and the feet's planned orientation come from it. Under
+    /// `cfg.wbc.joint_q_estimate` the harness builds it from the t=0
+    /// estimate instead ([`crate::robot::RobotModel::fk_of`]).
     pub init_fk: misarta::data::Data<f64>,
     /// LEAK: the leg-reach model, `LEG_REACH` (read by the harness) over the
     /// profile's length, with the descent's margin.
@@ -1126,7 +1128,9 @@ impl<S: WbcStack> Walker<S> {
             tick: obs.tick,
             state: &state,
             contact_fz: obs.contact_fz,
-            joint_pos_plant: obs.joint_pos_plant,
+            // The joint angles the posture levels read: the plant's (LEAK,
+            // §6.6), or the estimate's under JOINT_Q_EST.
+            joint_pos: if wcfg.wbc.joint_q_estimate { &obs.estimate.joint_q } else { obs.joint_pos_plant },
         };
         let st = obs_state(obs);
         let data = &st.data;

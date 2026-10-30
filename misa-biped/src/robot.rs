@@ -122,7 +122,9 @@ pub struct Observation<'a> {
     /// LEAK (§6.6 of the extraction plan): the PLANT's joint angles
     /// (harness order), with none of the sensor model's delay or noise.
     /// Read by the posture and arm-hold levels, as before the split; a leak
-    /// of the truth into the controller, kept visible here.
+    /// of the truth into the controller, kept visible here. Unread under
+    /// `Config::wbc.joint_q_estimate` (`JOINT_Q_EST`), which reads
+    /// `estimate.joint_q` instead.
     pub joint_pos_plant: &'a [f64],
 }
 
@@ -267,6 +269,13 @@ impl RobotModel {
     /// and `st.q`, so who asks first does not change the value.
     pub fn cmm<'s>(&self, st: &'s RobotState) -> &'s na::DMatrix<f64> {
         st.cmm.get_or_init(|| misarta::centroidal::compute_centroidal_momentum_matrix(&self.model, &st.q))
+    }
+
+    /// The forward kinematics at the estimate's configuration (no
+    /// dynamics): the start-up FK of `WalkerSetup::init_fk` when the
+    /// controller reads the estimate's joint angles (`JOINT_Q_EST`).
+    pub fn fk_of(&self, est: &StateEstimate) -> misarta::data::Data<f64> {
+        misarta::fk::forward_kinematics(&self.model, &self.configuration(est).0)
     }
 
     /// [`RobotModel::configuration`] then [`RobotModel::state`].

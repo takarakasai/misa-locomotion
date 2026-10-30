@@ -71,6 +71,8 @@ impl Config {
                 backend: None,
                 bench_gate: false,
                 friction_mu: None,
+                mu_assumed: None,
+                joint_q_estimate: false,
                 f_max_scale: 2.3,
                 f_max: None,
                 eom_hard: true,
@@ -593,9 +595,23 @@ pub struct WbcConfig {
     /// `QP_BENCH_GATE`: validate every solve (also on for the native
     /// backends proxqp / eiquadprog / qpoases, see [`WbcConfig::qp_gate`]).
     pub bench_gate: bool,
-    /// `friction_mu`. None = the plant's `MU_GROUND` x the profile's
-    /// friction margin ([`WbcConfig::friction_mu`]).
+    /// `friction_mu`. None = the floor friction (`mu_assumed`, or the
+    /// plant's `MU_GROUND`) x the profile's friction margin
+    /// ([`WbcConfig::friction_mu`]).
     pub friction_mu: Option<f64>,
+    /// `MU_ASSUMED`: the floor friction the controller ASSUMES, in place of
+    /// the plant's `MU_GROUND` (which the benches randomise per member).
+    /// None = the plant's value (the LEAK of §6.7 of
+    /// doc/from_claude/20261029_walker_extraction_plan.md, bit-identical).
+    /// The harness's nominal floor is 0.70 (its `MU_GROUND` default).
+    pub mu_assumed: Option<f64>,
+    /// `JOINT_Q_EST`: the posture and arm-hold levels read the ESTIMATE's
+    /// joint angles (`StateEstimate::joint_q`, with the sensor model's delay
+    /// and noise) instead of the plant's (`Observation::joint_pos_plant`,
+    /// the LEAK of §6.6). The harness reads the same switch for the
+    /// start-up FK and the degraded-solve fallback. false = the plant's
+    /// (bit-identical); with no delay and no joint noise the two are equal.
+    pub joint_q_estimate: bool,
     /// `F_MAX_SCALE` [body weights] and `F_MAX` [N] per foot. None = the
     /// scale x body weight ([`WbcConfig::f_max_per_foot`]).
     pub f_max_scale: f64,
@@ -625,10 +641,11 @@ impl WbcConfig {
             )
     }
 
-    /// The friction the QP plans against: `friction_mu`, or the plant's
-    /// friction `mu_ground` times the profile's margin.
+    /// The friction the QP plans against: `friction_mu`, or the floor's
+    /// friction times the profile's margin -- the assumed floor
+    /// (`mu_assumed`) when set, else the plant's `mu_ground` (LEAK).
     pub fn friction_mu(&self, mu_ground: f64, friction_margin: f64) -> f64 {
-        self.friction_mu.unwrap_or(mu_ground * friction_margin)
+        self.friction_mu.unwrap_or(self.mu_assumed.unwrap_or(mu_ground) * friction_margin)
     }
 
     /// The normal-force bound per foot [N]: `F_MAX`, or `F_MAX_SCALE` x m g.
