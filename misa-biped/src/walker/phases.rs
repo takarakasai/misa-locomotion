@@ -20,7 +20,7 @@ use crate::terrain::Stairs;
 use crate::config::Config;
 use crate::plan::Plan;
 use crate::recovery::{RefLib, RefMode};
-use crate::robot::{Estimate, Observation, RobotModel, RobotState};
+use crate::robot::{RobotModel, RobotState};
 use crate::sink::{LogSink, WalkerDiag};
 use crate::wbc::{
     AnchorEvent, ArmRef, CmpRef, ContactMode, ContactParams, MomCmp, MomRef, MpcNominal, SwingAxes, SwingRef,
@@ -138,12 +138,19 @@ impl<'a> Centroidal<'a> {
     }
 }
 
-/// The state the observation carries (the harness assembles it until S14).
-pub(crate) fn obs_state<'a>(obs: &Observation<'a>) -> &'a RobotState {
-    match obs.estimate {
-        Estimate::State(st) => st,
-        Estimate::Raw(_) => unreachable!("the walker assembles no state before S14"),
-    }
+/// The observation as the phases read it: the harness's [`crate::robot::Observation`]
+/// with its estimate replaced by the state the walker assembled from it
+/// (S14).
+pub(crate) struct TickObs<'a> {
+    pub tick: usize,
+    pub state: &'a RobotState,
+    pub contact_fz: [f64; 2],
+    pub joint_pos_plant: &'a [f64],
+}
+
+/// The tick's assembled state.
+pub(crate) fn obs_state<'a>(obs: &TickObs<'a>) -> &'a RobotState {
+    obs.state
 }
 
 /// Phase 1: the landing detector's tolerances and extension for the slice
@@ -235,7 +242,7 @@ pub(crate) fn phase_landing_clock(
     stats: &mut WalkerStats,
     cfg: &Config,
     k: &WalkerConsts,
-    obs: &Observation,
+    obs: &TickObs,
     actual: &Footsteps,
     t: f64,
     out: &mut dyn LogSink,
@@ -562,7 +569,7 @@ pub(crate) fn phase_support(
     anchor_events: &mut Vec<AnchorEvent>,
     cfg: &Config,
     k: &WalkerConsts,
-    obs: &Observation,
+    obs: &TickObs,
     t: f64,
     out: &mut dyn LogSink,
 ) -> SupportOut {
@@ -733,7 +740,7 @@ pub(crate) fn phase_contacts(
     anchor_events: &mut Vec<AnchorEvent>,
     cfg: &Config,
     k: &WalkerConsts,
-    obs: &Observation,
+    obs: &TickObs,
     sup: &SupportOut,
     t: f64,
     out: &mut dyn LogSink,
@@ -955,7 +962,7 @@ pub(crate) fn phase_dcm(
     stats: &mut WalkerStats,
     cfg: &Config,
     k: &WalkerConsts,
-    obs: &Observation,
+    obs: &TickObs,
     actual: &Footsteps,
     sup: &SupportOut,
     t: f64,
@@ -1519,7 +1526,7 @@ pub(crate) fn phase_preview(
     diag: &mut dyn WalkerDiag,
     cfg: &Config,
     k: &WalkerConsts,
-    obs: &Observation,
+    obs: &TickObs,
     actual: &Footsteps,
     stance_sides: &[usize],
     mut p_cmd: na::Vector2<f64>,
@@ -1660,7 +1667,7 @@ pub(crate) fn phase_height(
     plan: &mut Plan,
     cfg: &Config,
     k: &WalkerConsts,
-    obs: &Observation,
+    obs: &TickObs,
     sup: &SupportOut,
     stance_sides: &[usize],
     p_cmd: &na::Vector2<f64>,
@@ -1893,7 +1900,7 @@ pub(crate) fn phase_wrench_mpc(
     diag: &mut dyn WalkerDiag,
     cfg: &Config,
     k: &WalkerConsts,
-    obs: &Observation,
+    obs: &TickObs,
     actual: &Footsteps,
     cent: &Centroidal,
     sup: &SupportOut,
@@ -2635,7 +2642,7 @@ pub(crate) fn phase_task_refs(
     stats: &mut WalkerStats,
     cfg: &Config,
     k: &WalkerConsts,
-    obs: &Observation,
+    obs: &TickObs,
     cent: &Centroidal,
     sup: &SupportOut,
     stance_sides: &[usize],
@@ -3571,7 +3578,7 @@ pub(crate) fn phase_wbc(
     ctl: &CtlState,
     cfg: &Config,
     k: &WalkerConsts,
-    obs: &Observation,
+    obs: &TickObs,
     cent: &Centroidal,
     sup: &SupportOut,
     stance_sides: &[usize],
@@ -3718,7 +3725,7 @@ pub(crate) struct SolveDiag {
 pub(crate) fn phase_solve_diag(
     cfg: &Config,
     k: &WalkerConsts,
-    obs: &Observation,
+    obs: &TickObs,
     stance: &[usize],
     refs: &TaskRefs,
     w: &WbcSolution,

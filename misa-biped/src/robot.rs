@@ -7,7 +7,9 @@
 //! further use of MuJoCo -- built `q`/`v`, the mass matrix with the rotor
 //! inertia, `h` with the joint damping, the FK and the centroidal Jacobian.
 //! That second half is [`RobotModel::assemble`]; the rig keeps the plant and
-//! the sensor model and calls it.
+//! the sensor model (`BipedRig::sense`, which hands out a [`StateEstimate`]),
+//! and since S14 the walker calls `assemble` itself on the estimate it is
+//! given.
 //!
 //! The arithmetic is the rig's, in the rig's order (the joint loops, the
 //! armature added to `M` and the damping to `h` per joint, the CoM sums per
@@ -67,7 +69,9 @@ pub struct RobotModel {
 
 /// What the state estimator hands the walker: the floating base and the
 /// joints, in world axes and the harness's joint order. Joint rates the
-/// plant does not report are `None`.
+/// plant does not report are `None`. The joint rates arrive already
+/// saturated (articara's rig applies `QD_CLAMP` in `sense`); the walker
+/// uses them as they are.
 #[derive(Clone, Debug)]
 pub struct StateEstimate {
     pub base_pos: [f64; 3],
@@ -102,7 +106,11 @@ pub struct RobotState {
 pub struct Observation<'a> {
     /// The tick; the walker's time is `tick as f64 * dt`.
     pub tick: usize,
-    pub estimate: Estimate<'a>,
+    /// The state estimate; the walker assembles `M`, `h`, the FK and the
+    /// centroidal Jacobian from it ([`RobotModel::assemble`]) and hands the
+    /// result back with the command (S14; before, the harness assembled
+    /// it).
+    pub estimate: &'a StateEstimate,
     /// Vertical contact force per foot [N] (the only part of the measured
     /// contacts the controller reads).
     pub contact_fz: [f64; 2],
@@ -113,20 +121,12 @@ pub struct Observation<'a> {
     pub joint_pos_plant: &'a [f64],
 }
 
-/// The state part of an [`Observation`].
-pub enum Estimate<'a> {
-    /// The state already assembled by the harness (`rig.sync()` calls
-    /// [`RobotModel::assemble`] itself).
-    State(&'a RobotState),
-    /// The estimate alone; the walker assembles the state (S14).
-    Raw(&'a StateEstimate),
-}
-
 impl RobotModel {
     /// The estimate in misarta's coordinates: `q` with the base pose, `v`
     /// with the base twist in the BODY frame ([angular; linear], misarta's
-    /// FreeFlyer convention) and the joint rates clamped to `qd_clamp`.
-    pub fn configuration(&self, est: &StateEstimate, qd_clamp: f64) -> (Vec<f64>, Vec<f64>) {
+    /// FreeFlyer convention) and the joint rates (already saturated by the
+    /// estimator).
+    pub fn configuration(&self, est: &StateEstimate) -> (Vec<f64>, Vec<f64>) {
         let model = &self.model;
         let body_pos = est.base_pos;
         let body_quat = est.base_quat;
@@ -162,7 +162,7 @@ impl RobotModel {
             }
             if model.joints[mi].joint_type.nv() == 1 {
                 if let Some(qd) = est.joint_qd[ji] {
-                    v[model.v_idx[mi]] = qd.clamp(-qd_clamp, qd_clamp);
+                    v[model.v_idx[mi]] = qd;
                 }
             }
         }
@@ -256,8 +256,8 @@ impl RobotModel {
     }
 
     /// [`RobotModel::configuration`] then [`RobotModel::state`].
-    pub fn assemble(&self, est: &StateEstimate, qd_clamp: f64) -> RobotState {
-        let (q, v) = self.configuration(est, qd_clamp);
+    pub fn assemble(&self, est: &StateEstimate) -> RobotState {
+        let (q, v) = self.configuration(est);
         self.state(q, v, est)
     }
 

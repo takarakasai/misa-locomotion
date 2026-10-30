@@ -7,7 +7,8 @@
 //! state; [`WalkerInit::with_stack`] attaches the WBC stack (built by the
 //! harness from [`WalkerInit::contact_params`]) and gives the [`Walker`].
 //! Each tick the harness calls [`Walker::step`] with the [`Observation`]
-//! (phases 1-12: the landing clock, the support and contacts, the DCM
+//! (the state estimate, from which the walker assembles the dynamics and
+//! kinematics itself; phases 1-12: the landing clock, the support and contacts, the DCM
 //! reference and its push responses, the commanded ZMP, the CoM preview, the
 //! height, the wrench MPC, the levels' references, the stack's solve and the
 //! solve's diagnostics) and, after its own scenario (the push) has fired,
@@ -23,7 +24,7 @@ use crate::gait::{ContactCorrection, FootstepPlan, Footsteps, GaitParams, GaitPl
 use crate::outln;
 use crate::plan::Plan;
 use crate::recovery::{RefLib, RefMode};
-use crate::robot::{Observation, RobotModel};
+use crate::robot::{Observation, RobotModel, RobotState};
 use crate::sink::{LogSink, WalkerDiag};
 use crate::terrain::Stairs;
 use crate::wbc::{AnchorEvent, ContactParams, WbcSolution, WbcStack};
@@ -303,10 +304,13 @@ pub struct Command {
     pub degraded: bool,
 }
 
-/// One tick of the walker: the command and the tick's record.
+/// One tick of the walker: the command, the tick's record, and the state
+/// the walker assembled from the estimate (the harness's measurements and
+/// logs read its FK, CMM inputs and `q` / `v`).
 pub struct StepOutput {
     pub command: Command,
     pub record: TickRecord,
+    pub state: RobotState,
 }
 
 /// The walker with its plan made and its state initialised, before the WBC
@@ -1099,6 +1103,16 @@ impl<S: WbcStack> Walker<S> {
         let prof = robot.prof;
         // Phase 1: the landing detector's settings (it reads no observation).
         phase_landing_setup(ctl, plan, wcfg, k, t);
+        // The state from the estimate (S14; the harness assembled it
+        // before): q / v, M with the armature, h with the damping, the FK,
+        // the CoM and its Jacobian. The phases read it through `TickObs`.
+        let state = robot.assemble(obs.estimate);
+        let obs = &TickObs {
+            tick: obs.tick,
+            state: &state,
+            contact_fz: obs.contact_fz,
+            joint_pos_plant: obs.joint_pos_plant,
+        };
         let st = obs_state(obs);
         let (q, v, data) = (&st.q, &st.v, &st.data);
         // The measured soles (FK), once per tick: the phases and the
@@ -1232,7 +1246,7 @@ impl<S: WbcStack> Walker<S> {
             hip_z,
             stride_max_now,
         };
-        StepOutput { command: Command { sol, extracted, tau_gravity, rejected, degraded }, record }
+        StepOutput { command: Command { sol, extracted, tau_gravity, rejected, degraded }, record, state }
     }
 
     /// The end of the tick (phase 13), after the harness has fired its push:
