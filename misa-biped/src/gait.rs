@@ -199,7 +199,7 @@ impl GaitPlan {
         });
         t += p.t_start;
         let mut swing = p.first_swing;
-        for _ in 0..p.n_steps {
+        for step in 0..p.n_steps {
             let stance = 1 - swing;
             slices.push(Slice {
                 support: Support::Single { stance, swing },
@@ -207,7 +207,8 @@ impl GaitPlan {
                 t1: t + p.t_ss,
             });
             t += p.t_ss;
-            if p.t_flight > 0.0 {
+            // no flight after the last step: land it into the final stand
+            if p.t_flight > 0.0 && step + 1 < p.n_steps {
                 if p.t_ds > 0.0 {
                     slices.push(Slice { support: Support::Double, t0: t, t1: t + p.t_ds });
                     t += p.t_ds;

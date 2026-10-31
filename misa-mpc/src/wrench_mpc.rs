@@ -185,6 +185,14 @@ pub struct Input {
     /// linearises it at the previous solve's predicted trajectory (one SQP
     /// step per replan, as the moment arm is). `None` = no rows, bit-identical.
     pub com_z_max: Option<Vec<f64>>,
+    /// Per-node CoM reference `[position, velocity, acceleration]` at the
+    /// END of each node, world [m, m/s, m/s^2]. Replaces the straight-line
+    /// interpolation toward `target_com` / `target_velocity` and the single
+    /// `target_acceleration` -- a gait whose CoM is not a line (running:
+    /// ballistic flights and a vertical push in each stance) states it here.
+    /// It is also the moment-arm centre of each node when no `prior_com` is
+    /// used. `None` = the shipped references, bit-identical.
+    pub reference_trajectory: Option<Vec<[na::Vector3<f64>; 3]>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1090,9 +1098,10 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
         (na::DMatrix::zeros(3, nu), bias.rows(6, 3).into_owned());
 
     for k in 0..n {
+        let node_ref = input.reference_trajectory.as_ref().and_then(|r| r.get(k).copied());
         let arm_centre = match (&input.prior_com, cfg.arm_about_prior) {
             (Some(prior), true) if k < prior.len() => prior[k],
-            _ => input.target_com,
+            _ => node_ref.map_or(input.target_com, |r| r[0]),
         };
         for axis in 0..3 {
             let old_c = map.row(axis).into_owned();
@@ -1152,8 +1161,14 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
         prev_mom = (map.rows(6, 3).into_owned(), bias.rows(6, 3).into_owned());
 
         let frac = (k + 1) as f64 / n as f64;
-        let ref_c = input.com + (input.target_com - input.com) * frac;
-        let ref_v = input.velocity + (input.target_velocity - input.velocity) * frac;
+        let (ref_c, ref_v, ref_a) = match node_ref {
+            Some(r) => (r[0], r[1], r[2]),
+            None => (
+                input.com + (input.target_com - input.com) * frac,
+                input.velocity + (input.target_velocity - input.velocity) * frac,
+                input.target_acceleration,
+            ),
+        };
         let terminal = if k + 1 == n { 4.0 } else { 1.0 };
         for axis in 0..3 {
             add_residual(
@@ -1209,7 +1224,7 @@ pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
             add_residual(
                 &mut rows,
                 coeff,
-                gravity[axis] - input.target_acceleration[axis],
+                gravity[axis] - ref_a[axis],
                 cfg.acceleration_weight,
             );
         }
@@ -1976,8 +1991,15 @@ pub fn assemble_ocp(input: &Input, cfg: &Config) -> Option<misa_wbc::ocp::OcpPro
         let mut offset = na::DVector::zeros(36);
         let terminal = if k + 1 == cfg.horizon { 4.0 } else { 1.0 };
         let frac = (k + 1) as f64 / cfg.horizon as f64;
-        let rc = input.com + (input.target_com - input.com) * frac;
-        let rv = input.velocity + (input.target_velocity - input.velocity) * frac;
+        let node_ref = input.reference_trajectory.as_ref().and_then(|r| r.get(k).copied());
+        let (rc, rv, ra) = match node_ref {
+            Some(r) => (r[0], r[1], r[2]),
+            None => (
+                input.com + (input.target_com - input.com) * frac,
+                input.velocity + (input.target_velocity - input.velocity) * frac,
+                input.target_acceleration,
+            ),
+        };
         for axis in 0..9 {
             let weight = (terminal
                 * match axis {
@@ -2005,7 +2027,7 @@ pub fn assemble_ocp(input: &Input, cfg: &Config) -> Option<misa_wbc::ocp::OcpPro
                 }
             }
             offset[9 + axis] = cfg.acceleration_weight.sqrt()
-                * ((if axis == 2 { -cfg.gravity } else { 0.0 }) - input.target_acceleration[axis]);
+                * ((if axis == 2 { -cfg.gravity } else { 0.0 }) - ra[axis]);
         }
         for j in 0..12 {
             lu[(12 + j, j)] = cfg.wrench_weight.sqrt();
@@ -2241,6 +2263,7 @@ mod tests {
                 dcm_now: None,
                 reference_dcm_sensitivity: None,
                 com_z_max: None,
+                reference_trajectory: None,
             },
             cfg,
         )
@@ -2948,6 +2971,37 @@ mod tests {
             sol.sole_wrenches[0]
         );
         assert!(sol.sole_wrenches[1][5] > 0.0);
+    }
+
+    #[test]
+    fn flight_nodes_are_ballistic_with_a_running_reference() {
+        // stance, then a flight in the middle of the horizon, then stance:
+        // no wrench in the flight nodes, and the per-node reference (a
+        // vertical push before the flight, -g inside it) is accepted
+        let (mut input, cfg) = standing([0.5 * 9.81 * 6.5, 0.5 * 9.81 * 6.5]);
+        let n = cfg.horizon;
+        let flight = |k: usize| k == n / 2;
+        input.contact_schedule = (0..n).map(|k| if flight(k) { [false, false] } else { [true, true] }).collect();
+        input.activation_schedule = (0..n).map(|k| if flight(k) { [0.0, 0.0] } else { [1.0, 1.0] }).collect();
+        input.reference_fz_schedule = (0..n)
+            .map(|k| if flight(k) { [0.0, 0.0] } else { [0.6 * cfg.mass * cfg.gravity; 2] })
+            .collect();
+        input.min_fz_schedule = vec![[0.0, 0.0]; n];
+        input.reference_trajectory = Some(
+            (0..n)
+                .map(|k| {
+                    let a = if flight(k) { -cfg.gravity } else { 0.2 * cfg.gravity };
+                    [input.com, na::Vector3::zeros(), na::Vector3::new(0.0, 0.0, a)]
+                })
+                .collect(),
+        );
+        let sol = solve(&input, &cfg).expect("a running horizon must solve");
+        assert_eq!(sol.trajectory.len(), n);
+        // the walker's old schedule asked for load in a flight node: that
+        // is infeasible, which is how a running horizon used to fail
+        let mut bad = input.clone();
+        bad.min_fz_schedule[n / 2] = [5.0, 5.0];
+        assert!(solve(&bad, &cfg).is_none());
     }
 
     #[test]

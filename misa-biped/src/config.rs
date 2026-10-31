@@ -167,6 +167,8 @@ impl Config {
                 kd_rot: 40.0,
                 lift_h: 0.5 * prof.lift_h,
                 run_bulge: 0.0,
+                run_rise: 0.0,
+                run_fall: 0.0,
                 heel_toe: false,
                 heel_strike_deg: 6.0,
                 toe_off_deg: 12.0,
@@ -941,6 +943,13 @@ pub struct SwingConfig {
     /// `RUN_SWING_BULGE`: running only, the airborne foot bows outward by
     /// this much mid-swing (sin² profile) to clear the stance leg [m].
     pub run_bulge: f64,
+    /// `RUN_SWING_RISE`, `RUN_SWING_FALL`: running only, the fractions of
+    /// the foot's air time spent lifting to `LIFT_H` and coming back down
+    /// (smoothstep each, held at the apex between). 0 = the walking sin²
+    /// bump, which leaves a pushing-off foot only ~2 mm up after a 30 ms
+    /// flight -- the foot drags and the flight disappears.
+    pub run_rise: f64,
+    pub run_fall: f64,
     /// `HEEL_TOE`: walking with heel strike and toe-off -- the landing
     /// foot comes down toe-up (`HEEL_STRIKE_DEG`) on its heel edge and rolls
     /// flat over `HEEL_ROLL_TIME` [s]; the rear foot rolls onto its toe edge

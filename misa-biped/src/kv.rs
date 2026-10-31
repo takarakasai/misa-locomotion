@@ -268,6 +268,8 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
             kd_rot: num("KD_SWING_ROT", d.kd_rot),
             lift_h: num("LIFT_H", d.lift_h),
             run_bulge: num("RUN_SWING_BULGE", d.run_bulge),
+            run_rise: num("RUN_SWING_RISE", d.run_rise).clamp(0.0, 0.5),
+            run_fall: num("RUN_SWING_FALL", d.run_fall).clamp(0.0, 0.5),
             heel_toe: flag("HEEL_TOE", d.heel_toe),
             heel_strike_deg: num("HEEL_STRIKE_DEG", d.heel_strike_deg),
             toe_off_deg: num("TOE_OFF_DEG", d.toe_off_deg),

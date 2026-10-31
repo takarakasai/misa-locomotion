@@ -717,6 +717,16 @@ pub(crate) fn phase_support(
             (Support::Single { stance, .. }, Support::Flight { .. }) => {
                 anchor_events.push(AnchorEvent::Release(stance));
             }
+            // running: a flight that ends on both feet
+            (Support::Flight { .. }, Support::Double) => {
+                for side in 0..2 {
+                    let mi = robot.foot_mi[side];
+                    let mut p = misarta::se3::translation(&data.oMi[mi]);
+                    let r = misarta::se3::rotation_matrix(&data.oMi[mi]);
+                    p.z = steps.sole[side].z + prof.sole_below_origin;
+                    anchor_events.push(AnchorEvent::Touchdown { side, pos: p, rot: r });
+                }
+            }
             // running: the flight ends on the next stance foot
             (Support::Flight { .. }, Support::Single { stance, .. }) => {
                 let mi = robot.foot_mi[stance];
@@ -2022,24 +2032,11 @@ pub(crate) fn phase_height(
     if sup.support.is_flight() {
         return HeightOut { z_ref: com.z, a_com: na::Vector3::new(0.0, 0.0, -G) };
     }
-    if let Support::Single { .. } = sup.support {
-        let flight_dur = |j: Option<usize>| {
-            j.and_then(|j| slices.get(j)).filter(|s| s.support.is_flight()).map_or(0.0, |s| s.duration())
-        };
-        let (tf0, tf1) = (flight_dur(i.checked_sub(1)), flight_dur(Some(i + 1)));
-        if tf0 > 0.0 || tf1 > 0.0 {
-            let sl = &slices[i];
-            let ts = sl.duration().max(1e-3);
-            let tau = (t - sl.t0).clamp(0.0, ts);
-            let (v0, v1) = (-G * tf0 / 2.0, G * tf1 / 2.0);
-            let a = PI / (2.0 * ts) * (v1 - v0 + G * ts);
-            let w = PI / ts;
-            let zdd = -G + a * (w * tau).sin();
-            let zd = v0 - G * tau + a / w * (1.0 - (w * tau).cos());
-            let z = z_ref + v0 * tau - 0.5 * G * tau * tau + a / w * (tau - (w * tau).sin() / w);
-            let a_z = zdd + kp_com * (z - com.z) + kd_com * (zd - com_vel.z);
-            return HeightOut { z_ref: z, a_com: na::Vector3::new(a_xy.x, a_xy.y, a_z) };
-        }
+    if let Support::Single { .. } = sup.support
+        && let Some((z, zd, zdd)) = run_vertical(slices, t, z_ref)
+    {
+        let a_z = zdd + kp_com * (z - com.z) + kd_com * (zd - com_vel.z);
+        return HeightOut { z_ref: z, a_com: na::Vector3::new(a_xy.x, a_xy.y, a_z) };
     }
     // ---- walking: inverted-pendulum vault over the stance leg --------
     let walk_vault = cfg.com_plan.walk_vault;
@@ -2283,6 +2280,15 @@ pub(crate) fn phase_wrench_mpc(
                 };
                 let mut reference = [0.0; 2];
                 let mut minimum = [0.0; 2];
+                // running: no load in a flight, the planned vertical push
+                // m(g + z̈) in a stance next to one
+                let node_t = t + stage_dt;
+                let node_sup = plan.gait().support_at(node_t);
+                let weight = match run_vertical(&plan.gait().slices, node_t, 0.0) {
+                    _ if node_sup.is_flight() => 0.0,
+                    Some((_, _, zdd)) => total_mass * (G + zdd).max(0.0),
+                    None => weight,
+                };
                 reference[high] = high_share * weight;
                 reference[low] = (1.0 - high_share) * weight;
                 minimum[high] = stair_wrench_low_min * weight * high_share;
@@ -2528,6 +2534,36 @@ pub(crate) fn phase_wrench_mpc(
             } else {
                 None
             };
+            // running: per-node CoM reference -- ballistic in a flight
+            // (no horizontal acceleration, z̈ = -g), the planned vertical
+            // push in a stance, the walk's horizontal line otherwise
+            let reference_trajectory = if plan.gait().slices.iter().any(|s| s.support.is_flight()) {
+                let z0 = plan.height().at(t).0;
+                Some(
+                    (0..stair_wrench_horizon)
+                        .map(|kk| {
+                            let tk = t + (kk as f64 + 1.0) * stair_wrench_preview_dt;
+                            let frac = (kk as f64 + 1.0) / stair_wrench_horizon as f64;
+                            let mut c = com + (target_com - com) * frac;
+                            let mut v = com_vel + (target_velocity - com_vel) * frac;
+                            let mut a = a_com;
+                            let flight = plan.gait().support_at(tk).is_flight();
+                            if flight {
+                                a.x = 0.0;
+                                a.y = 0.0;
+                            }
+                            if let Some((z, zd, zdd)) = run_vertical(&plan.gait().slices, tk, z0) {
+                                c.z = z;
+                                v.z = zd;
+                                a.z = zdd;
+                            }
+                            [c, v, a]
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
             let input = misa_mpc::wrench_mpc::Input {
                 com,
                 velocity: if diag_vz_bias_mpc != 0.0 {
@@ -2540,6 +2576,7 @@ pub(crate) fn phase_wrench_mpc(
                 target_velocity,
                 target_acceleration: a_com,
                 com_z_max: None,
+                reference_trajectory,
                 contacts: [contacts[0].clone(), contacts[1].clone()],
                 // Walking branch: the contact SET over the horizon comes
                 // from the gait, node by node (lift-off and landing inside
@@ -2964,6 +3001,7 @@ pub(crate) fn phase_task_refs(
     let stair_swing_ff = cfg.swing.stair_ff;
     let lift_h = cfg.swing.lift_h;
     let run_bulge = cfg.swing.run_bulge;
+    let (run_rise, run_fall) = (cfg.swing.run_rise, cfg.swing.run_fall);
     let heel_toe_walk = cfg.swing.heel_toe && !plan.gait().slices.iter().any(|s| s.support.is_flight());
     let heel_strike_deg = cfg.swing.heel_strike_deg;
     // (CONTACT_FZ_RATE, a load-split damper on the measured normal force,
@@ -3776,6 +3814,19 @@ pub(crate) fn phase_task_refs(
             let td = na::Vector3::new(plan_xy.x, plan_xy.y, lo.z);
             let mut tgt = crate::gait::swing_position(lo, td, lift_h, frac);
             let mut tgt_v = crate::gait::swing_velocity(lo, td, lift_h, frac, dur);
+            if run_rise > 0.0 && run_fall > 0.0 {
+                // fast lift-off, hold at the apex, fast set-down
+                let ss = |u: f64| -> (f64, f64) {
+                    let u = u.clamp(0.0, 1.0);
+                    (u * u * (3.0 - 2.0 * u), 6.0 * u * (1.0 - u))
+                };
+                let (sr, dsr) = ss(frac / run_rise);
+                let (sf, dsf) = ss((1.0 - frac) / run_fall);
+                let base = lo.z + (td.z - lo.z) * frac;
+                let (h, dh) = if sr <= sf { (sr, dsr / (run_rise * dur)) } else { (sf, -dsf / (run_fall * dur)) };
+                tgt.z = base + lift_h * h;
+                tgt_v.z = (td.z - lo.z) / dur + lift_h * dh;
+            }
             if run_bulge > 0.0 {
                 // bow outward (away from the other foot), sin² in the swing
                 let out_sign = if side == 0 { 1.0 } else { -1.0 };
@@ -4209,4 +4260,48 @@ pub(crate) fn phase_end_tick(ctl: &mut CtlState, plan: &mut Plan, cfg: &Config, 
         ed.commit();
         outln!(out, "  [ref] t={t:.3} reference over, back to the gait");
     }
+}
+
+
+/// Running: the planned vertical CoM motion `(z, z_dot, z_ddot)` at absolute
+/// time `ta`, or `None` outside the running part. A single support next to a
+/// flight gets a half-sine push, `z̈ = -g + a·sin(πτ/Ts)` with
+/// `a = π/(2Ts)·(v1 - v0 + g·Ts)`, turning the landing velocity
+/// `v0 = -g·Tf_prev/2` into the take-off velocity `v1 = +g·Tf_next/2`
+/// (the impulse balance of a periodic run: the stance's mean vertical force
+/// is m·g·(Ts + Tf)/Ts); `z0` is the height at the stance's touchdown. A
+/// flight is ballistic from the preceding stance's take-off state.
+pub(crate) fn run_vertical(slices: &[crate::gait::Slice], ta: f64, z0: f64) -> Option<(f64, f64, f64)> {
+    let n = slices.len();
+    let i = slices.iter().position(|s| ta < s.t1).unwrap_or(n - 1);
+    let flight_dur = |j: Option<usize>| {
+        j.and_then(|j| slices.get(j)).filter(|s| s.support.is_flight()).map_or(0.0, |s| s.duration())
+    };
+    let stance = |j: usize, tau: f64| -> Option<(f64, f64, f64)> {
+        let sl = &slices[j];
+        if !matches!(sl.support, Support::Single { .. }) {
+            return None;
+        }
+        let (tf0, tf1) = (flight_dur(j.checked_sub(1)), flight_dur(Some(j + 1)));
+        if tf0 <= 0.0 && tf1 <= 0.0 {
+            return None;
+        }
+        let ts = sl.duration().max(1e-3);
+        let tau = tau.clamp(0.0, ts);
+        let (v0, v1) = (-G * tf0 / 2.0, G * tf1 / 2.0);
+        let a = PI / (2.0 * ts) * (v1 - v0 + G * ts);
+        let w = PI / ts;
+        Some((
+            z0 + v0 * tau - 0.5 * G * tau * tau + a / w * (tau - (w * tau).sin() / w),
+            v0 - G * tau + a / w * (1.0 - (w * tau).cos()),
+            -G + a * (w * tau).sin(),
+        ))
+    };
+    if slices[i].support.is_flight() {
+        let j = i.checked_sub(1)?;
+        let (z1, v1, _) = stance(j, slices[j].duration())?;
+        let tau = ta - slices[i].t0;
+        return Some((z1 + v1 * tau - 0.5 * G * tau * tau, v1 - G * tau, -G));
+    }
+    stance(i, ta - slices[i].t0)
 }
