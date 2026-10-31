@@ -24,7 +24,8 @@
 //! There is no `Default`: the G1 champion's values as the default would move
 //! kyo46rs's baseline, and the code's own defaults depend on the machine
 //! ([`Config::code_defaults`] takes the [`Profile`]). The two adopted
-//! baselines are presets, [`Config::g1_v619`] and [`Config::kyo46rs_v2`].
+//! baselines are presets, [`Config::g1_v619`] and [`Config::kyo46rs_v2`]
+//! (with the v3 candidate [`Config::kyo46rs_v3`]).
 use crate::plan::DcmParams;
 use crate::preview::LandingTiming;
 use crate::profile::Profile;
@@ -553,6 +554,23 @@ impl Config {
         c.com_plan.preplan = Some(true);
         c.com_plan.preplan_xy_min = 0.075;
         c.com_plan.stair_ss_max = 0.7254;
+        c
+    }
+
+    /// kyo46rs base v3 candidate (2026-10-20, doc/from_claude/20261018_kyo46rs_port_scoping.md
+    /// §11): [`Config::kyo46rs_v2`] with the five stair-zone keys of
+    /// `log/claude_g1rand_20260925/kyo_base_v3.json` (`STAIR_SWING_FF=0`,
+    /// `STAIR_ABSOLUTE_TD_DESC=1`, `STAIR_ALIGN_STAND_LINE=1`,
+    /// `STAIR_ZONE_CROUCH=0.02`, `STAIR_ZONE_SWING_ROT=3`). Off the stair zone
+    /// it walks as v2 does. Checked against that file by
+    /// crates/misa-biped/tests/presets.rs.
+    pub fn kyo46rs_v3() -> Self {
+        let mut c = Self::kyo46rs_v2();
+        c.swing.stair_ff = false;
+        c.swing.absolute_td_desc = true;
+        c.stair_plan.align_stand_line = true;
+        c.descent.zone_crouch = 0.02;
+        c.swing.zone_rot_mode = 3;
         c
     }
 
