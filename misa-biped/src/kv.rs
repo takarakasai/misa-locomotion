@@ -309,6 +309,8 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
         ArmMomentumConfig {
             hold: flag("ARM_HOLD", d.hold),
             hold_joints: get("ARM_HOLD_JOINTS").unwrap_or_else(|| d.hold_joints.clone()),
+            head_counter: num("HEAD_COUNTER", d.head_counter),
+            head_height: num("HEAD_HEIGHT", d.head_height).max(0.1),
             before_swing: flag("ARM_BEFORE_SWING", d.before_swing),
             kp: num("KP_ARM", d.kp),
             kd: num("KD_ARM", d.kd),

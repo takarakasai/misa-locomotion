@@ -192,6 +192,8 @@ impl Config {
             arm: ArmMomentumConfig {
                 hold: false,
                 hold_joints: "all".into(),
+                head_counter: 0.0,
+                head_height: 0.45,
                 before_swing: false,
                 kp: 400.0,
                 kd: 40.0,
@@ -996,6 +998,12 @@ pub struct ArmMomentumConfig {
     /// `ARM_BEFORE_SWING`, `KP_ARM`, `KD_ARM`.
     pub hold: bool,
     pub hold_joints: String,
+    /// `HEAD_COUNTER` (0..1): the held waist-roll joints lean the torso
+    /// against the CoM's lateral sway (relative to the feet's midline) so
+    /// the head, `HEAD_HEIGHT` [m] above the waist joint, stays over the
+    /// midline -- this fraction of the sway is cancelled.
+    pub head_counter: f64,
+    pub head_height: f64,
     pub before_swing: bool,
     pub kp: f64,
     pub kd: f64,

@@ -3303,6 +3303,20 @@ pub(crate) fn phase_task_refs(
         // Reference = the seed, with the punching arm's two rows swept
         // toward the extended pose.
         let mut q_ref = robot.q_seed.clone();
+        // HEAD_COUNTER: lean the torso (waist roll) against the CoM's
+        // lateral offset from the feet's midline, so the head stays over it
+        if cfg.arm.head_counter != 0.0 {
+            let st_ = obs_state(obs);
+            let mid = sup.steps.mid_xy();
+            let yaw = 0.5 * (sup.steps.yaw[0] + sup.steps.yaw[1]);
+            let lateral = -(st_.com.x - mid.x) * yaw.sin() + (st_.com.y - mid.y) * yaw.cos();
+            let lean = (cfg.arm.head_counter * lateral / cfg.arm.head_height).clamp(-0.15, 0.15);
+            for &(ji, _) in &arms {
+                if robot.joint_names[ji].contains("waist_roll") {
+                    q_ref[ji] += lean;
+                }
+            }
+        }
         if let Some((sh, el)) = jab_names {
             for (name, target) in [(sh, jab_pitch), (el, jab_elbow)] {
                 if let Some(&ji) = robot.joint_map.get(name) {
