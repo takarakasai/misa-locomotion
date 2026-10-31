@@ -70,8 +70,8 @@ pub struct RobotModel {
 /// What the state estimator hands the walker: the floating base and the
 /// joints, in world axes and the harness's joint order. Joint rates the
 /// plant does not report are `None`. The joint rates arrive already
-/// saturated (articara's rig applies `QD_CLAMP` in `sense`); the walker
-/// uses them as they are.
+/// saturated ([`crate::estimator`]'s `qd_clamp`); the walker uses them as
+/// they are.
 #[derive(Clone, Debug)]
 pub struct StateEstimate {
     pub base_pos: [f64; 3],
