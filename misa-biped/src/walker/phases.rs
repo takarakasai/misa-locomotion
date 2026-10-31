@@ -2039,6 +2039,13 @@ pub(crate) fn phase_wrench_mpc(
     let mpc_footstep_y_in_fwd = cfg.mpc_footstep.y_in_fwd;
     let mpc_footstep_y_in_fwd_trig = cfg.mpc_footstep.y_in_fwd_trig;
     let mpc_footstep = cfg.mpc_footstep.on;
+    // MPC_FOOTSTEP_STAIR_OFF: no landing variable on a known staircase.
+    // Measured 2026-10-31 on kyo46rs (v3 + the G1 push keys): the one-step
+    // descent's long stair step (5x the cruise step) carries a DCM error
+    // above MPC_FOOTSTEP_TRIG with no push at all, the variable arms on every
+    // member and moves the landing, and 20 mm descents fall 0 better / 63
+    // worse over three seeds; without the variable they are unchanged.
+    let mpc_footstep_stair_off = cfg.mpc_footstep.stair_off;
     // Arm the landing variable only once the DCM error of this single
     // support reaches this value [m] (latched for the rest of the step), the
     // rule the contact_plan adjuster uses (CP_TRIG): an undisturbed step
@@ -2328,6 +2335,17 @@ pub(crate) fn phase_wrench_mpc(
                 && plan.claims().landing_owner(plan.gait().index_at(t)) != Some(Writer::PushReplan)
                 && wrench_mpc_apply
                 && let Support::Single { swing, .. } = support
+                && !(mpc_footstep_stair_off
+                    && k.stairs.as_ref().is_some_and(|st| {
+                        (st.riser.abs() > 1e-6 || st.down_n > 0)
+                            && crate::height::stair_zone_crouch(
+                                plan.footsteps().at_slice(plan.gait().index_at(t)).mid_xy().x,
+                                st,
+                                cfg.stair_zone.lead,
+                                cfg.stair_zone.tail,
+                                1.0,
+                            ) > 0.0
+                    }))
                 && {
                     let i = plan.gait().index_at(t);
                     if mpc_footstep_trig > 0.0

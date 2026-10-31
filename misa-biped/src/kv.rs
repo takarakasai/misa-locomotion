@@ -513,6 +513,7 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
             capture_w: num("MPC_LANDING_CAPTURE_W", d.capture_w).max(0.0),
             capture_j: flag("MPC_LANDING_CAPTURE_J", d.capture_j),
             lex: flag("MPC_LANDING_LEX", d.lex),
+            stair_off: flag("MPC_FOOTSTEP_STAIR_OFF", d.stair_off),
         }
     };
 

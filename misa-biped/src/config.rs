@@ -342,6 +342,7 @@ impl Config {
                 capture_w: 0.0,
                 capture_j: false,
                 lex: false,
+                stair_off: false,
             },
             mpc_cross: MpcCrossConfig { y: 0.0, ex: 0.02, floor: 0.0, hold_z: 0.0, hold_xy: 0.02 },
             push_replan: PushReplanConfig {
@@ -1304,6 +1305,10 @@ pub struct MpcFootstepConfig {
     pub capture_w: f64,
     pub capture_j: bool,
     pub lex: bool,
+    /// `MPC_FOOTSTEP_STAIR_OFF`: never arm the landing variable while the
+    /// step is on a known staircase (its zone, `STAIR_ZONE_CROUCH_LEAD` /
+    /// `_TAIL`), as LAND_REANCHOR and MOM_CMP already do.
+    pub stair_off: bool,
 }
 
 /// The MPC landing crossing the stance foot.
