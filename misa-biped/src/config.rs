@@ -247,6 +247,9 @@ impl Config {
                         probe_speed: 0.05,
                         probe_max: 0.03,
                     },
+                    reanchor: 0.0,
+                    reanchor_max: 0.10,
+                    reanchor_load: 0.3,
                 }
             },
             com_plan: ComPlanConfig {
@@ -1072,6 +1075,16 @@ pub struct LandingConfig {
     pub speed_xy: f64,
     pub speed_z: f64,
     pub event: ContactEventConfig,
+    /// `LAND_REANCHOR` [m] (0 = off), `LAND_REANCHOR_MAX` [m],
+    /// `LAND_REANCHOR_LOAD` [body weights]: once per double support, when the
+    /// foot that just landed carries the load, move the plan's position of
+    /// that foot (until it lifts again) onto the measured sole if they differ
+    /// by more than `reanchor` and less than `reanchor_max` (2026-10-31,
+    /// kyo46rs: a pushed swing lands 2-4 cm off its target and the plan keeps
+    /// the stance foot, its DCM reference and its ZMP box where it was not).
+    pub reanchor: f64,
+    pub reanchor_max: f64,
+    pub reanchor_load: f64,
 }
 
 /// Event-driven contact.

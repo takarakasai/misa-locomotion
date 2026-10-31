@@ -74,6 +74,8 @@ pub(crate) struct CtlState {
     pub push_replan_shift: f64,
     /// (slice, inward is +y) latched when the MPC crossing gate opens.
     pub mpc_fs_cross_latched: Option<(usize, bool)>,
+    /// LAND_REANCHOR: the double support whose landing has been checked.
+    pub reanchor_ds: Option<usize>,
     /// CoM preview: the reference ZMP, the predicted CoM and velocity, and
     /// the time of the next solve.
     pub preview_p: na::Vector2<f64>,
@@ -219,6 +221,7 @@ pub struct WalkerStats {
     pub ds_feasible_total: f64,
     pub n_push_replan: u32,
     pub n_mpc_fs_cross: u32,
+    pub n_reanchor: u32,
     pub preview_count: u32,
     pub preview_failures: u32,
     pub preview_error: f64,
@@ -1016,6 +1019,7 @@ impl WalkerInit {
             push_replan_state: None,
             push_replan_shift: 0.0,
             mpc_fs_cross_latched: None,
+            reanchor_ds: None,
             preview_p: steps.mid_xy(),
             preview_c: com0.xy(),
             preview_v: na::Vector2::zeros(),

@@ -568,6 +568,57 @@ pub(crate) fn phase_landing_clock(
             ed.commit();
         }
     }
+    // LAND_REANCHOR [m]: the plan onto the foot that just landed. Measured
+    // 2026-10-31 on kyo46rs (0.9 N*s toward the stance side, early phase):
+    // the pushed swing lands 2-4 cm wide of its target (the WBC uses the
+    // swing leg for the trunk while the stance CoP is at its edge), and the
+    // plan keeps that foot where it was meant to land -- the DCM reference
+    // and the ZMP box of the next single support then sit 4 cm inside the
+    // real stance sole, the CoP saturates at its inner edge and the next
+    // swing is flung inward into the stance leg. Once per double support,
+    // when the landed foot carries LAND_REANCHOR_LOAD of the weight, its
+    // planned position (until it lifts again, `shift_next`) moves onto the
+    // measured sole if they differ by more than LAND_REANCHOR and less than
+    // LAND_REANCHOR_MAX; not on a known staircase (its zone). 0 = off.
+    let reanchor = cfg.landing.reanchor;
+    if reanchor > 0.0 {
+        let i = plan.gait().index_at(t + 1e-6);
+        let is_ds = |j: usize| matches!(plan.gait().slices[j].support, Support::Double);
+        if is_ds(i) {
+            let mut first = i;
+            while first > 0 && is_ds(first - 1) {
+                first -= 1;
+            }
+            let in_stair_zone = k.stairs.as_ref().is_some_and(|st| {
+                (st.riser.abs() > 1e-6 || st.down_n > 0)
+                    && crate::height::stair_zone_crouch(
+                        plan.footsteps().at_slice(i).mid_xy().x,
+                        st,
+                        cfg.stair_zone.lead,
+                        cfg.stair_zone.tail,
+                        1.0,
+                    ) > 0.0
+            });
+            if ctl.reanchor_ds != Some(first)
+                && !in_stair_zone
+                && let Some(sw) = first.checked_sub(1).and_then(|j| plan.gait().slices[j].support.swing())
+                && obs.contact_fz[sw] >= cfg.landing.reanchor_load * total_mass * G
+            {
+                ctl.reanchor_ds = Some(first);
+                let planned = plan.footsteps().at_slice(i).xy(sw);
+                let d = actual.sole[sw].xy() - planned;
+                if d.norm() > reanchor && d.norm() < cfg.landing.reanchor_max {
+                    let mut ed = plan.edit(Writer::ContactEvent);
+                    ed.shift_next(i, sw, d);
+                    ed.commit();
+                    stats.n_reanchor += 1;
+                    if debug.replan {
+                        outln!(out, "  [reanchor] t={t:.3} ds {first} foot {sw} plan ({:.3},{:+.3}) -> sole ({:.3},{:+.3})", planned.x, planned.y, actual.sole[sw].x, actual.sole[sw].y);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// What phase 3 found: the schedule's slice now, the support (all `Double`
