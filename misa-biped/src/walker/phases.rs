@@ -2861,6 +2861,7 @@ pub(crate) fn phase_task_refs(
     let step_dz_swing_min = cfg.swing.step_dz_min;
     let stair_swing_ff = cfg.swing.stair_ff;
     let lift_h = cfg.swing.lift_h;
+    let run_bulge = cfg.swing.run_bulge;
     // (CONTACT_FZ_RATE, a load-split damper on the measured normal force,
     // was FALSIFIED -- worse than undamped at every weight -- and is
     // removed, as is DS_FZ_FLOOR_WEIGHT / _BW, a soft double-support load
@@ -3181,16 +3182,16 @@ pub(crate) fn phase_task_refs(
             .into_iter()
             .filter(|&(ji, _)| {
                 let n = robot.joint_names[ji].as_str();
-                // "+"-separated groups: elbow, shoulder, waist, all (=
-                // shoulder+elbow); e.g. "shoulder+waist" also holds the
+                // "+"-separated joint-name fragments, "all" = shoulder +
+                // elbow (the default); e.g. "shoulder+waist" also holds the
                 // waist joints (a trunk task on the pelvis then keeps the
-                // torso still too).
+                // torso still too), "shoulder+waist_roll" only the roll.
                 let groups: Vec<&str> = arm_hold_joints.split('+').collect();
                 let has = |g: &str| groups.contains(&g);
-                let base = (has("elbow") && n.contains("elbow"))
-                    || (has("shoulder") && n.contains("shoulder"))
-                    || (has("waist") && n.contains("waist"))
-                    || ((has("all") || !(has("elbow") || has("shoulder") || has("waist")))
+                // any other group is a joint-name fragment ("waist_roll")
+                let named = groups.iter().any(|g| !g.is_empty() && *g != "all" && n.contains(g));
+                let base = named
+                    || ((has("all") || groups.iter().all(|g| g.is_empty()))
                         && (n.contains("shoulder") || n.contains("elbow")));
                 base || jab_names.is_some_and(|(_, e)| n == e)
             })
@@ -3646,8 +3647,15 @@ pub(crate) fn phase_task_refs(
             let frac = ((t - t_lo) / dur).clamp(0.0, 1.0);
             let plan_xy = plan.footsteps().at_slice(j).sole[side];
             let td = na::Vector3::new(plan_xy.x, plan_xy.y, lo.z);
-            let tgt = crate::gait::swing_position(lo, td, lift_h, frac);
-            let tgt_v = crate::gait::swing_velocity(lo, td, lift_h, frac, dur);
+            let mut tgt = crate::gait::swing_position(lo, td, lift_h, frac);
+            let mut tgt_v = crate::gait::swing_velocity(lo, td, lift_h, frac, dur);
+            if run_bulge > 0.0 {
+                // bow outward (away from the other foot), sin² in the swing
+                let out_sign = if side == 0 { 1.0 } else { -1.0 };
+                let ps = PI * frac;
+                tgt.y += out_sign * run_bulge * ps.sin().powi(2);
+                tgt_v.y += out_sign * run_bulge * PI * (2.0 * ps).sin() / dur;
+            }
             let om3 = &jf.rows(0, 3).into_owned() * v_dvec;
             let axes = match swing_rot_mode {
                 0 => SwingAxes::Xyz,

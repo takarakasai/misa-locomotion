@@ -166,6 +166,7 @@ impl Config {
                 kp_rot: 400.0,
                 kd_rot: 40.0,
                 lift_h: 0.5 * prof.lift_h,
+                run_bulge: 0.0,
                 rot_mode: 1,
                 zone_rot_mode: 0,
                 tracking_cubic_ff: false,
@@ -930,6 +931,9 @@ pub struct SwingConfig {
     pub kd_rot: f64,
     /// `LIFT_H` [m] (half the profile's).
     pub lift_h: f64,
+    /// `RUN_SWING_BULGE`: running only, the airborne foot bows outward by
+    /// this much mid-swing (sin² profile) to clear the stance leg [m].
+    pub run_bulge: f64,
     /// `SWING_ROT` (0 translation, 1 +yaw, 2 full pose, 3 no yaw), and
     /// `STAIR_ZONE_SWING_ROT` (non-negative) inside a stair zone (0 = the same).
     pub rot_mode: u32,

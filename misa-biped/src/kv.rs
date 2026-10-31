@@ -267,6 +267,7 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
             kp_rot: num("KP_SWING_ROT", d.kp_rot),
             kd_rot: num("KD_SWING_ROT", d.kd_rot),
             lift_h: num("LIFT_H", d.lift_h),
+            run_bulge: num("RUN_SWING_BULGE", d.run_bulge),
             rot_mode: num("SWING_ROT", d.rot_mode as f64) as u32,
             zone_rot_mode: num("STAIR_ZONE_SWING_ROT", d.zone_rot_mode as f64).max(0.0) as u32,
             tracking_cubic_ff: flag("TRACKING_CUBIC_FF", d.tracking_cubic_ff),
