@@ -115,6 +115,7 @@ impl Config {
                 zmp_lat_scale: 1.0,
                 zmp_roll: None,
                 com_xy_jerk_max: f64::INFINITY,
+                trig_lpf_hz: 0.0,
             },
             gait: GaitConfig {
                 t_start: 2.0,
@@ -800,6 +801,11 @@ pub struct DcmConfig {
     pub zmp_roll: Option<f64>,
     /// `COM_XY_JERK_MAX` (positive, or infinite = off; checked by the harness).
     pub com_xy_jerk_max: f64,
+    /// `PUSH_TRIG_LPF_HZ` [Hz] (non-negative, 0 = off): a first-order
+    /// low-pass on the DCM error (measured minus reference) that arms the MPC
+    /// landing variable (`MPC_FOOTSTEP_TRIG`) and engages PUSH_REPLAN; their
+    /// placement and every other use of the error stay unfiltered.
+    pub trig_lpf_hz: f64,
 }
 
 impl DcmConfig {

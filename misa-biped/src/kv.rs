@@ -186,6 +186,7 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
             zmp_lat_scale: num("ZMP_LAT_SCALE", d.zmp_lat_scale),
             zmp_roll: opt("ZMP_ROLL").or(d.zmp_roll),
             com_xy_jerk_max: num("COM_XY_JERK_MAX", d.com_xy_jerk_max),
+            trig_lpf_hz: num("PUSH_TRIG_LPF_HZ", d.trig_lpf_hz).max(0.0),
         }
     };
 
