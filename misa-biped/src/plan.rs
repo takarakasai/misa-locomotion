@@ -439,6 +439,7 @@ mod tests {
             n_steps: 6,
             first_swing: RIGHT,
             t_end: 8.0,
+            t_flight: 0.0,
         };
         let gait = GaitPlan::new(&p);
         let steps = Footsteps {

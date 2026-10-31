@@ -84,6 +84,9 @@ pub(crate) struct CtlState {
     pub prev_support: crate::gait::Support,
     /// Where the swing sole left the ground.
     pub swing_lift_off: Option<na::Vector3<f64>>,
+    /// Running: where and when each foot last left the ground (its own
+    /// swing spans flight + the other foot's stance + flight).
+    pub run_lift_off: [Option<(na::Vector3<f64>, f64)>; 2],
     /// Load-change rate per foot (the managed-contact trigger).
     pub fz_prev: [f64; 2],
     pub fz_rate_ema: [f64; 2],
@@ -393,6 +396,7 @@ impl WalkerInit {
             n_steps: wcfg.gait.n_steps,
             first_swing: wcfg.gait.first_swing,
             t_end: total_t,
+            t_flight: wcfg.gait.t_flight,
         };
         // W1: run the schedule (so the ZMP reference moves) but never actually
         // release a foot. Isolates "can the balance reference move at all" from
@@ -479,7 +483,7 @@ impl WalkerInit {
         // place, which stays a special case of this rather than a separate path.
         // A commanded speed maps to it as stride = v * (t_ss + t_ds).
         // Velocity command. STRIDE is kept as a shorthand for VX in m/step.
-        let t_step = gp.t_ss + gp.t_ds;
+        let t_step = gp.t_ss + gp.t_ds + gp.t_flight;
         let stride = wcfg.gait.stride;
         let (vx, vy, wz) = (command.vx, command.vy, command.wz);
         // Crouch/rise while doing it, to load the sagittal chain during locomotion
@@ -1022,6 +1026,7 @@ impl WalkerInit {
             preview_next: 0.0,
             prev_support: plan.gait().support_at(0.0),
             swing_lift_off: None,
+            run_lift_off: [None, None],
             fz_prev: [0.0; 2],
             fz_rate_ema: [0.0; 2],
             managed_until: [f64::NEG_INFINITY; 2],

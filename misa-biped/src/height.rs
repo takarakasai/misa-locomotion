@@ -28,6 +28,8 @@ pub fn stance_level(soles_z: &[f64], ds_frac: Option<f64>) -> f64 {
             let (z0, z1) = (soles_z[0], soles_z[1]);
             z0.min(z1) + frac * (z0.max(z1) - z0.min(z1))
         }
+        // no sole down (flight): the ground the robot left, taken as 0
+        _ if soles_z.is_empty() => 0.0,
         _ => soles_z.iter().sum::<f64>() / soles_z.len() as f64,
     }
 }

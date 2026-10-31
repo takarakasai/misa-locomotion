@@ -645,7 +645,25 @@ pub(crate) fn phase_support(
     // standing did with get_or_insert) is what makes a foot that has been
     // somewhere else since stop arguing for where it used to be.
     if support != ctl.prev_support {
+        for side in 0..2 {
+            if ctl.prev_support.is_stance(side) && !support.is_stance(side) {
+                let p = misarta::se3::translation(&data.oMi[robot.foot_mi[side]]);
+                ctl.run_lift_off[side] = Some((p, t));
+            }
+        }
         match (ctl.prev_support, support) {
+            // running: the stance foot pushes off into the flight
+            (Support::Single { stance, .. }, Support::Flight { .. }) => {
+                anchor_events.push(AnchorEvent::Release(stance));
+            }
+            // running: the flight ends on the next stance foot
+            (Support::Flight { .. }, Support::Single { stance, .. }) => {
+                let mi = robot.foot_mi[stance];
+                let mut p = misarta::se3::translation(&data.oMi[mi]);
+                let r = misarta::se3::rotation_matrix(&data.oMi[mi]);
+                p.z = steps.sole[stance].z + prof.sole_below_origin;
+                anchor_events.push(AnchorEvent::Touchdown { side: stance, pos: p, rot: r });
+            }
             (Support::Double, Support::Single { swing, .. }) => {
                 anchor_events.push(AnchorEvent::Release(swing));
                 let p = misarta::se3::translation(&data.oMi[robot.foot_mi[swing]]);
@@ -1569,13 +1587,15 @@ pub(crate) fn phase_preview(
     let st = obs_state(obs);
     let (com, com_vel) = (st.com, st.com_vel);
     if plan.claims().done(Writer::ReplanStart) {
-        let measured_support = if stance_sides.len() == 2 {
-            Support::Double
-        } else {
-            let side = stance_sides[0];
-            Support::Single {
-                stance: side,
-                swing: 1 - side,
+        let measured_support = match stance_sides.len() {
+            2 => Support::Double,
+            0 => Support::Flight { next: 0 },
+            _ => {
+                let side = stance_sides[0];
+                Support::Single {
+                    stance: side,
+                    swing: 1 - side,
+                }
             }
         };
         let current_box = SupportBox::from_stance_yawed(
@@ -1906,6 +1926,35 @@ pub(crate) fn phase_height(
     // was not adopted and is removed.)
     let a_z = zdd_ref + kp_com * (z_ref - com.z) + kd_com * (zd_ref - com_vel.z - diag_vz_bias_height);
     let a_com = na::Vector3::new(a_xy.x, a_xy.y, a_z);
+    // ---- running: ballistic flight, impulse-balanced stance ----------
+    // In flight the only possible CoM acceleration is gravity. A stance
+    // next to a flight gets a half-sine vertical push that turns the
+    // landing velocity -g·Tf_prev/2 into the take-off velocity +g·Tf_next/2:
+    // z̈ = -g + a·sin(πτ/Ts) with a = π/(2Ts)·(v1 - v0 + g·Ts).
+    let slices = &plan.gait().slices;
+    let i = sup.slice_idx;
+    if sup.support.is_flight() {
+        return HeightOut { z_ref: com.z, a_com: na::Vector3::new(0.0, 0.0, -G) };
+    }
+    if let Support::Single { .. } = sup.support {
+        let flight_dur = |j: Option<usize>| {
+            j.and_then(|j| slices.get(j)).filter(|s| s.support.is_flight()).map_or(0.0, |s| s.duration())
+        };
+        let (tf0, tf1) = (flight_dur(i.checked_sub(1)), flight_dur(Some(i + 1)));
+        if tf0 > 0.0 || tf1 > 0.0 {
+            let sl = &slices[i];
+            let ts = sl.duration().max(1e-3);
+            let tau = (t - sl.t0).clamp(0.0, ts);
+            let (v0, v1) = (-G * tf0 / 2.0, G * tf1 / 2.0);
+            let a = PI / (2.0 * ts) * (v1 - v0 + G * ts);
+            let w = PI / ts;
+            let zdd = -G + a * (w * tau).sin();
+            let zd = v0 - G * tau + a / w * (1.0 - (w * tau).cos());
+            let z = z_ref + v0 * tau - 0.5 * G * tau * tau + a / w * (tau - (w * tau).sin() / w);
+            let a_z = zdd + kp_com * (z - com.z) + kd_com * (zd - com_vel.z);
+            return HeightOut { z_ref: z, a_com: na::Vector3::new(a_xy.x, a_xy.y, a_z) };
+        }
+    }
     HeightOut { z_ref, a_com }
 }
 
@@ -2305,6 +2354,7 @@ pub(crate) fn phase_wrench_mpc(
                         match plan.gait().support_at(at) {
                             Support::Double => true,
                             Support::Single { swing: sw, .. } => sw != swing,
+                            Support::Flight { .. } => false,
                         }
                     })
                     .map(|first_node| misa_mpc::wrench_mpc::Landing {
@@ -2403,6 +2453,7 @@ pub(crate) fn phase_wrench_mpc(
                             match plan.gait().support_at(at) {
                                 Support::Double => [true, true],
                                 Support::Single { swing, .. } => [swing != 0, swing != 1],
+                                Support::Flight { .. } => [false, false],
                             }
                         })
                         .collect()
@@ -2653,6 +2704,8 @@ pub(crate) struct TaskRefs {
     pub shares: Vec<f64>,
     pub free_side: Option<usize>,
     pub swing: Option<SwingRef>,
+    /// Running: the second airborne foot's task (flight has two).
+    pub swing2: Option<SwingRef>,
     pub swing_tgt: na::Vector3<f64>,
     pub swing_cmd_acc_z: f64,
 }
@@ -3128,11 +3181,17 @@ pub(crate) fn phase_task_refs(
             .into_iter()
             .filter(|&(ji, _)| {
                 let n = robot.joint_names[ji].as_str();
-                let base = match arm_hold_joints.as_str() {
-                    "elbow" => n.contains("elbow"),
-                    "shoulder" => n.contains("shoulder"),
-                    _ => n.contains("shoulder") || n.contains("elbow"),
-                };
+                // "+"-separated groups: elbow, shoulder, waist, all (=
+                // shoulder+elbow); e.g. "shoulder+waist" also holds the
+                // waist joints (a trunk task on the pelvis then keeps the
+                // torso still too).
+                let groups: Vec<&str> = arm_hold_joints.split('+').collect();
+                let has = |g: &str| groups.contains(&g);
+                let base = (has("elbow") && n.contains("elbow"))
+                    || (has("shoulder") && n.contains("shoulder"))
+                    || (has("waist") && n.contains("waist"))
+                    || ((has("all") || !(has("elbow") || has("shoulder") || has("waist")))
+                        && (n.contains("shoulder") || n.contains("elbow")));
                 base || jab_names.is_some_and(|(_, e)| n == e)
             })
             .collect();
@@ -3561,6 +3620,59 @@ pub(crate) fn phase_task_refs(
     };
 
 
+    // ---- running: every airborne foot follows its own arc ----------
+    // from where it left the ground to its next footstep, timed from its
+    // own lift-off to its next scheduled touchdown (across slices).
+    let running = plan.gait().slices.iter().any(|s| s.support.is_flight());
+    let mut swing = swing;
+    let mut swing2: Option<SwingRef> = None;
+    if running {
+        let slices = &plan.gait().slices;
+        let mut built: Vec<SwingRef> = Vec::new();
+        for side in (0..2).filter(|s| !stance_sides.contains(s)) {
+            let Some(j) = (slice_idx + 1..slices.len()).find(|&j| slices[j].support.is_stance(side)) else {
+                continue;
+            };
+            let mi = robot.foot_mi[side];
+            let jf = misarta::jacobian::compute_joint_jacobian_from_data(&robot.model, q, data, mi);
+            let djf = misarta::jacobian::compute_joint_jacobian_time_derivative(&robot.model, q, v, mi);
+            let djv = &djf * v_dvec;
+            let pos = misarta::se3::translation(&data.oMi[mi]);
+            let vel3 = &jf.rows(3, 3).into_owned() * v_dvec;
+            let vel = na::Vector3::new(vel3[0], vel3[1], vel3[2]);
+            let (lo, t_lo) = ctl.run_lift_off[side].unwrap_or((pos, t));
+            let t_td = slices[j].t0;
+            let dur = (t_td - t_lo).max(1e-3);
+            let frac = ((t - t_lo) / dur).clamp(0.0, 1.0);
+            let plan_xy = plan.footsteps().at_slice(j).sole[side];
+            let td = na::Vector3::new(plan_xy.x, plan_xy.y, lo.z);
+            let tgt = crate::gait::swing_position(lo, td, lift_h, frac);
+            let tgt_v = crate::gait::swing_velocity(lo, td, lift_h, frac, dur);
+            let om3 = &jf.rows(0, 3).into_owned() * v_dvec;
+            let axes = match swing_rot_mode {
+                0 => SwingAxes::Xyz,
+                2 => SwingAxes::Pose,
+                3 => SwingAxes::XyzRollPitch,
+                _ => SwingAxes::XyzYaw,
+            };
+            let rot = Some((
+                misarta::se3::rotation_matrix(&data.oMi[mi]),
+                foot_rot_at(side, plan.footsteps().at_slice(j).yaw[side]),
+                na::Vector3::new(om3[0], om3[1], om3[2]),
+                kp_sw_rot,
+                kd_sw_rot,
+            ));
+            if built.is_empty() {
+                swing_tgt = tgt;
+                swing_cmd_acc_z = kp_sw_z * (tgt.z - pos.z) + kd_sw * (tgt_v.z - vel.z);
+            }
+            built.push(SwingRef { jf, djv, pos, vel, tgt, tgt_v, kp_xy: kp_sw_xy, kp_z: kp_sw_z, kd: kd_sw, axes, rot, acc: None });
+        }
+        let mut it = built.into_iter();
+        swing = it.next();
+        swing2 = it.next();
+    }
+
     TaskRefs {
         j_trunk,
         djv_trunk,
@@ -3577,6 +3689,7 @@ pub(crate) fn phase_task_refs(
         shares,
         free_side,
         swing,
+        swing2,
         swing_tgt,
         swing_cmd_acc_z,
     }
@@ -3703,8 +3816,9 @@ pub(crate) fn phase_wbc(
             yaw: refs.yaw_ref.map(|_| refs.ori[2]),
         },
         coupled: refs.coupled_active,
-        momentum: refs.mom.as_ref(),
-        mom_cmp: refs.cmp.as_ref().map(|r| MomCmp { cmm: cent.cmm(), r }),
+        // in flight the angular momentum is conserved: no momentum task
+        momentum: if sup.support.is_flight() { None } else { refs.mom.as_ref() },
+        mom_cmp: if sup.support.is_flight() { None } else { refs.cmp.as_ref().map(|r| MomCmp { cmm: cent.cmm(), r }) },
         arm_hold: refs.arm.as_ref(),
         joint_pos: obs.joint_pos,
         tau_gravity: &refs.tau_gravity,
@@ -3717,6 +3831,7 @@ pub(crate) fn phase_wbc(
             .filter(|_| wrench_mpc_apply && nc > 0)
             .map(|wrench| MpcNominal { wrench, authority: mpc_sole_authority && nc == 2, blend: stair_wrench_blend }),
         swing: refs.swing.as_ref(),
+        swing2: refs.swing2.as_ref(),
         contact_fz: obs.contact_fz,
     };
     stack.solve(&req, out)

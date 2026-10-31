@@ -400,7 +400,7 @@ impl WbcStack for TaskStack {
 
 
         // ---- the swing level
-        let p_swing = req.swing.map(|s| match s.acc {
+        let swing_task = |s: &crate::wbc::SwingRef| match s.acc {
             Some(acc) => bt::swing_with_pose_acceleration(
                 dyn_ctx.qddot(),
                 &s.jf,
@@ -430,7 +430,12 @@ impl WbcStack for TaskStack {
                 s.axes,
                 s.rot,
             ),
-        });
+        };
+        let p_swing = match (req.swing.map(swing_task), req.swing2.map(swing_task)) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, None) => a,
+            (None, b) => b,
+        };
 
         // Keep the unweighted task for post-solve diagnostics; `p_swing`
         // itself is moved into the hierarchy below.

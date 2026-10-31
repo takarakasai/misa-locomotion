@@ -19,12 +19,17 @@ pub enum Support {
     Double,
     /// One foot down. `stance` carries the load, `swing` is in the air.
     Single { stance: Side, swing: Side },
+    /// Both feet in the air (running). `next` is the foot that lands at the
+    /// end of the flight.
+    Flight { next: Side },
 }
 
 impl Support {
+    /// The single swing foot of a single-support slice (`None` in double
+    /// support and in flight, where no foot or both feet are airborne).
     pub fn swing(self) -> Option<Side> {
         match self {
-            Support::Double => None,
+            Support::Double | Support::Flight { .. } => None,
             Support::Single { swing, .. } => Some(swing),
         }
     }
@@ -32,7 +37,11 @@ impl Support {
         match self {
             Support::Double => true,
             Support::Single { stance, .. } => stance == side,
+            Support::Flight { .. } => false,
         }
+    }
+    pub fn is_flight(self) -> bool {
+        matches!(self, Support::Flight { .. })
     }
 }
 
@@ -74,6 +83,10 @@ pub struct GaitParams {
     /// Which foot swings first.
     pub first_swing: Side,
     pub t_end: f64,
+    /// Flight between steps (running): both feet off the ground. With
+    /// `t_flight > 0` the slice after each single support is a flight
+    /// (and a double support only if `t_ds > 0` too).
+    pub t_flight: f64,
 }
 
 impl Default for GaitParams {
@@ -85,6 +98,7 @@ impl Default for GaitParams {
             n_steps: 20,
             first_swing: RIGHT,
             t_end: 25.0,
+            t_flight: 0.0,
         }
     }
 }
@@ -193,12 +207,21 @@ impl GaitPlan {
                 t1: t + p.t_ss,
             });
             t += p.t_ss;
-            slices.push(Slice {
-                support: Support::Double,
-                t0: t,
-                t1: t + p.t_ds,
-            });
-            t += p.t_ds;
+            if p.t_flight > 0.0 {
+                if p.t_ds > 0.0 {
+                    slices.push(Slice { support: Support::Double, t0: t, t1: t + p.t_ds });
+                    t += p.t_ds;
+                }
+                slices.push(Slice { support: Support::Flight { next: swing }, t0: t, t1: t + p.t_flight });
+                t += p.t_flight;
+            } else {
+                slices.push(Slice {
+                    support: Support::Double,
+                    t0: t,
+                    t1: t + p.t_ds,
+                });
+                t += p.t_ds;
+            }
             swing = 1 - swing;
         }
         // Run out to the end of the experiment on both feet, as a SEPARATE
@@ -445,7 +468,7 @@ impl FootstepPlan {
                     at.push(next);
                     cur = next;
                 }
-                Support::Double => at.push(cur),
+                Support::Double | Support::Flight { .. } => at.push(cur),
             }
         }
         FootstepPlan {
@@ -568,7 +591,7 @@ impl FootstepPlan {
                     at.push(cur);
                     step += 1;
                 }
-                Support::Double => at.push(cur),
+                Support::Double | Support::Flight { .. } => at.push(cur),
             }
         }
         FootstepPlan {
@@ -629,7 +652,7 @@ impl FootstepPlan {
                     cur = next;
                     step += 1;
                 }
-                Support::Double => at.push(cur),
+                Support::Double | Support::Flight { .. } => at.push(cur),
             }
         }
         FootstepPlan {
@@ -664,7 +687,7 @@ impl FootstepPlan {
                     cur = next;
                     step += 1;
                 }
-                Support::Double => at.push(cur),
+                Support::Double | Support::Flight { .. } => at.push(cur),
             }
         }
         FootstepPlan {
@@ -757,7 +780,7 @@ impl FootstepPlan {
         let mut k = 0usize;
         for j in from..self.at.len().min(plan.slices.len()) {
             match plan.slices[j].support {
-                Support::Double => {
+                Support::Double | Support::Flight { .. } => {
                     in_first = false;
                     self.at[j] = cur;
                 }
@@ -889,7 +912,8 @@ impl ContactCorrection {
             // not unloaded yet means nothing ever unloads it -- the contact
             // constraint pins it and the swing task never runs. Measured, that
             // turned 20 steps into a shuffle, foot apex 0.2-1.2 mm.
-            if nominal.swing() == Some(side) {
+            // A scheduled flight lifts both feet the same way.
+            if nominal.swing() == Some(side) || nominal.is_flight() {
                 let was = self.state[side];
                 self.state[side] = false;
                 let _ = was;
@@ -927,10 +951,11 @@ impl ContactCorrection {
         // would be commanding a posture PD in free flight. Keep the foot the
         // schedule believes in.
         self.previous_nominal = Some(nominal);
-        if stance.is_empty() {
+        // ... except in a scheduled flight, where no foot is down by design.
+        if stance.is_empty() && !nominal.is_flight() {
             let keep = match nominal {
                 Support::Single { stance, .. } => stance,
-                Support::Double => usize::from(fz[1] > fz[0]),
+                Support::Double | Support::Flight { .. } => usize::from(fz[1] > fz[0]),
             };
             self.state[keep] = true;
             stance.push(keep);
@@ -1166,6 +1191,7 @@ mod tests {
             n_steps: 3,
             first_swing: RIGHT,
             t_end: 10.0,
+            t_flight: 0.0,
         };
         let plan = GaitPlan::new(&p);
         // start DS, then (SS, DS) x 3, then the SETTLE slice. The settle is
@@ -1259,7 +1285,7 @@ mod tests {
 
     #[test]
     fn a_speed_change_leaves_the_plan_identical_before_it_and_moves_further_after() {
-        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.35, n_steps: 10, first_swing: RIGHT, t_end: 20.0 };
+        let p = GaitParams { t_start: 1.0, t_ds: 0.2, t_ss: 0.35, n_steps: 10, first_swing: RIGHT, t_end: 20.0, t_flight: 0.0 };
         let plan = GaitPlan::new(&p);
         let init = Footsteps {
             sole: [na::Vector3::new(0.0, 0.05, 0.0), na::Vector3::new(0.0, -0.05, 0.0)],
@@ -1284,6 +1310,7 @@ mod tests {
             n_steps: 8,
             first_swing: RIGHT,
             t_end: 20.0,
+            t_flight: 0.0,
         };
         let plan = GaitPlan::new(&p);
         let init = Footsteps {
@@ -1383,6 +1410,7 @@ mod tests {
             n_steps: 10,
             first_swing: RIGHT,
             t_end: 30.0,
+            t_flight: 0.0,
         };
         let plan = GaitPlan::new(&p);
         let init = Footsteps {
@@ -1416,6 +1444,7 @@ mod tests {
             n_steps: 12,
             first_swing: RIGHT,
             t_end: 30.0,
+            t_flight: 0.0,
         };
         let plan = GaitPlan::new(&p);
         let init = Footsteps {
@@ -1457,6 +1486,7 @@ mod tests {
             n_steps: 10,
             first_swing: RIGHT,
             t_end: 30.0,
+            t_flight: 0.0,
         };
         let plan = GaitPlan::new(&p);
         let init = Footsteps {
@@ -1493,6 +1523,7 @@ mod tests {
             n_steps: 4,
             first_swing: RIGHT,
             t_end: 60.0,
+            t_flight: 0.0,
         };
         let plan = GaitPlan::new(&p);
         let last_step_end = plan
@@ -1548,5 +1579,22 @@ mod shift_next_tests {
         assert!((fp.at[6].sole[0].y - 0.1).abs() < 1e-12);
         // Foot 1 untouched.
         assert!(fp.at.iter().all(|f| (f.sole[1].x - 0.5).abs() < 1e-12));
+    }
+
+    #[test]
+    fn running_plan_alternates_stance_and_flight() {
+        let p = GaitParams { t_start: 1.0, t_ds: 0.0, t_ss: 0.2, n_steps: 4, first_swing: RIGHT, t_end: 3.0, t_flight: 0.05 };
+        let g = GaitPlan::new(&p);
+        let kinds: Vec<_> = g.slices.iter().map(|s| s.support).collect();
+        assert_eq!(kinds[0], Support::Double);
+        assert_eq!(kinds[1], Support::Single { stance: LEFT, swing: RIGHT });
+        assert_eq!(kinds[2], Support::Flight { next: RIGHT });
+        assert_eq!(kinds[3], Support::Single { stance: RIGHT, swing: LEFT });
+        assert!(!kinds[2].is_stance(LEFT) && !kinds[2].is_stance(RIGHT));
+        assert!((g.slices[2].duration() - 0.05).abs() < 1e-12);
+        // a scheduled flight empties the contact set
+        let mut cc = ContactCorrection::new(300.0, 2);
+        let (st, _) = cc.update(Support::Flight { next: RIGHT }, [100.0, 100.0]);
+        assert!(st.is_empty());
     }
 }

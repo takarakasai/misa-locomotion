@@ -148,7 +148,9 @@ impl DcmPlan {
                     let u = na::Vector2::new(st.yaw[stance].cos(), st.yaw[stance].sin());
                     Some((p - u * roll, p + u * roll))
                 }
-                Support::Double => None,
+                // flight: no pressure point; the short flight is ramped
+                // like a double support (a virtual ZMP between the soles)
+                Support::Double | Support::Flight { .. } => None,
             }
         };
         let n = plan.slices.len();
@@ -527,6 +529,10 @@ impl SupportBox {
 
     /// Returns the clamped point and how far it had to move (0 = inside).
     pub fn clamp(&self, p: &na::Vector2<f64>) -> (na::Vector2<f64>, f64) {
+        // No stance foot (flight): there is no polygon to clamp into.
+        if !(self.lo.x <= self.hi.x && self.lo.y <= self.hi.y) {
+            return (*p, 0.0);
+        }
         let c = na::Vector2::new(
             p.x.clamp(self.lo.x, self.hi.x),
             p.y.clamp(self.lo.y, self.hi.y),
@@ -559,6 +565,7 @@ mod tests {
             n_steps: 4,
             first_swing: RIGHT,
             t_end: 6.0,
+            t_flight: 0.0,
         };
         let plan = DcmPlan::from_schedule(&GaitPlan::new(&p), &steps(), 0.315, 1.0);
         for s in plan.segs.iter().skip(1) {
@@ -582,6 +589,7 @@ mod tests {
                 n_steps,
                 first_swing: RIGHT,
                 t_end: 30.0,
+                t_flight: 0.0,
             };
             let gait = GaitPlan::new(&p);
             let fp = FootstepPlan::alternating(&gait, &steps(), 0.03, 0);
@@ -628,6 +636,7 @@ mod tests {
             n_steps: 3,
             first_swing: RIGHT,
             t_end: 4.0,
+            t_flight: 0.0,
         };
         let plan = DcmPlan::from_schedule(&GaitPlan::new(&p), &steps(), 0.315, 1.0);
         let h = 1e-6;
@@ -661,6 +670,7 @@ mod tests {
             n_steps: 2,
             first_swing: RIGHT,
             t_end: 5.0,
+            t_flight: 0.0,
         };
         let plan = DcmPlan::from_schedule(&GaitPlan::new(&p), &steps(), 0.315, 1.0);
         let end = plan.reference(5.0);
@@ -679,6 +689,7 @@ mod tests {
             n_steps: 2,
             first_swing: RIGHT,
             t_end: 5.0,
+            t_flight: 0.0,
         };
         let gait = GaitPlan::new(&p);
         let plan = DcmPlan::from_schedule(&gait, &steps(), 0.315, 1.0);
@@ -700,6 +711,7 @@ mod tests {
             n_steps: 3,
             first_swing: RIGHT,
             t_end: 6.0,
+            t_flight: 0.0,
         };
         let mut gait = GaitPlan::new(&p);
         assert_eq!(gait.insert_ds_settles(0.15, 1), 2);
@@ -715,7 +727,7 @@ mod tests {
         let mid = fp.at_slice(hold).mid_xy();
         let next_stance = match gait.slices[next_ss].support {
             Support::Single { stance, .. } => fp.at_slice(next_ss).xy(stance),
-            Support::Double => panic!("expected single support after settle"),
+            Support::Double | Support::Flight { .. } => panic!("expected single support after settle"),
         };
         assert!((plan.segs[first].p1 - mid).norm() < 1e-12);
         assert!((plan.segs[hold].p0 - mid).norm() < 1e-12);
@@ -739,6 +751,7 @@ mod tests {
             n_steps: 20,
             first_swing: RIGHT,
             t_end: 25.0,
+            t_flight: 0.0,
         };
         let plan = DcmPlan::from_schedule(&GaitPlan::new(&p), &steps(), 0.315, 1.0);
         let mut t = 0.0;

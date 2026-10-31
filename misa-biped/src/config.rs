@@ -126,6 +126,7 @@ impl Config {
                 turn_in_ds: true,
                 ds_settle: 0.0,
                 ds_settle_after_step: 1,
+                t_flight: 0.0,
                 stride: 0.0,
                 stride_ramp: 6,
                 alternate: true,
@@ -826,6 +827,8 @@ pub struct GaitConfig {
     /// step `DS_SETTLE_AFTER_STEP` (at least 1).
     pub ds_settle: f64,
     pub ds_settle_after_step: usize,
+    /// Flight between steps (running), both feet off the ground; 0 = walk.
+    pub t_flight: f64,
     /// `STRIDE` [m/step]: shorthand for the forward speed (`VX`'s default).
     pub stride: f64,
     /// `STRIDE_RAMP` [steps].

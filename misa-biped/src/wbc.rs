@@ -175,6 +175,8 @@ pub struct WbcRequest<'a> {
     pub shares: &'a [f64],
     pub mpc: Option<MpcNominal<'a>>,
     pub swing: Option<&'a SwingRef>,
+    /// Running: the second airborne foot (same level as `swing`).
+    pub swing2: Option<&'a SwingRef>,
     /// The measured vertical contact forces (diagnostics only).
     pub contact_fz: [f64; 2],
 }

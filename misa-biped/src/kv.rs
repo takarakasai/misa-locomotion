@@ -210,6 +210,7 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
             turn_in_ds: flag("TURN_IN_DS", d.turn_in_ds),
             ds_settle: num("DS_SETTLE", d.ds_settle),
             ds_settle_after_step: num("DS_SETTLE_AFTER_STEP", d.ds_settle_after_step as f64).max(1.0) as usize,
+            t_flight: num("T_FLIGHT", d.t_flight).max(0.0),
             stride: num("STRIDE", d.stride),
             stride_ramp: num("STRIDE_RAMP", d.stride_ramp as f64) as usize,
             alternate: flag("ALTERNATE", d.alternate),
