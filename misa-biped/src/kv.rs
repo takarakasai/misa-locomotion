@@ -85,6 +85,12 @@ pub fn base_config(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> Conf
 /// unsupported `WBC_STRATEGY` / `WBC_QP_BACKEND` / `MPC_QP_BACKEND` and on a
 /// preset named for another robot.
 pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> Config {
+    config_over_kv(None, prof, get)
+}
+
+/// [`config_from_kv`] over a given base `Config` (a harness's own preset
+/// for a robot without one in this crate) instead of [`base_config`].
+pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> Config {
     let rough = rough_mode(get);
     let get = |k: &str| -> Option<String> {
         match rough.as_ref().and_then(|r| r.iter().find(|(n, _)| *n == k)) {
@@ -95,7 +101,10 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
     let num = |k: &str, d: f64| -> f64 { get(k).and_then(|s| s.parse().ok()).unwrap_or(d) };
     let flag = |k: &str, d: bool| -> bool { get(k).map(|v| v != "0").unwrap_or(d) };
     let opt = |k: &str| -> Option<f64> { get(k).and_then(|v| v.parse().ok()) };
-    let d = base_config(prof, &get);
+    let d = match base {
+        Some(b) => b,
+        None => base_config(prof, &get),
+    };
 
     let wbc = {
         let d = &d.wbc;
