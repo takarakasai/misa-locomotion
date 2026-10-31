@@ -375,6 +375,15 @@ pub struct Config {
     pub kkt_complementarity_tolerance: f64,
     /// Weight on the height-cap slack (see `Input::com_z_max`).
     pub reach_weight: f64,
+    /// Diagnostic traces, written as lines to the `trace` of
+    /// [`solve_traced`] (nothing is printed; the solve is unchanged):
+    /// the touchdown node the timed landing chose when it shortened the step
+    /// (`[landing-time]`, was `MPC_LANDING_TIME_DEBUG`), and why a solve
+    /// failed -- the strict lexicographic problem's broken equality group,
+    /// the KKT gate, a non-optimal status (`[lex-diag]`, `[mpc-gate]`,
+    /// `[mpc-fail]`, was `MPC_FS_DEBUG`).
+    pub trace_landing_time: bool,
+    pub trace_failures: bool,
 }
 
 impl Default for Config {
@@ -424,6 +433,8 @@ impl Default for Config {
             kkt_tolerance: 1e-6,
             kkt_complementarity_tolerance: 1e-6,
             reach_weight: 1e6,
+            trace_landing_time: false,
+            trace_failures: false,
         }
     }
 }
@@ -883,12 +894,16 @@ fn landing_at(input: &Input, cfg: &Config, land: &Landing, k_td: usize) -> Optio
 /// freedom (`min_first_node >= first_node`) or timing off it is
 /// [`lexicographic_landing`] at the nominal node.
 pub fn lexicographic_landing_timed(input: &Input, cfg: &Config) -> Option<(na::Vector2<f64>, usize)> {
+    landing_timed_traced(input, cfg, &mut Vec::new())
+}
+
+fn landing_timed_traced(input: &Input, cfg: &Config, trace_out: &mut Vec<String>) -> Option<(na::Vector2<f64>, usize)> {
     let land = input.landing.as_ref()?;
     if !cfg.landing_timing || land.min_first_node >= land.first_node {
         return lexicographic_landing(input, cfg).map(|dp| (dp, land.first_node));
     }
     let mut best: Option<(na::Vector2<f64>, usize, f64)> = None;
-    let debug = std::env::var("MPC_LANDING_TIME_DEBUG").is_ok();
+    let debug = cfg.trace_landing_time;
     let mut trace = String::new();
     let nominal_cost = landing_at(input, cfg, land, land.first_node).map(|(_, c)| c);
     for k_td in (land.min_first_node..=land.first_node).rev() {
@@ -905,17 +920,21 @@ pub fn lexicographic_landing_timed(input: &Input, cfg: &Config) -> Option<(na::V
         }
     }
     if debug && let Some((dp, k, _)) = best && k < land.first_node {
-        eprintln!(
+        trace_out.push(format!(
             "  [landing-time] first_node={} chosen={k} dp=({:+.3},{:+.3}) xi0={:?}{trace}",
             land.first_node, dp.x, dp.y, input.dcm_now.map(|v| (v.x, v.y))
-        );
+        ));
     }
     best.map(|(dp, k, _)| (dp, k))
 }
 
 pub fn assemble(input: &Input, cfg: &Config) -> Option<DenseProblem> {
+    assemble_traced(input, cfg, &mut Vec::new())
+}
+
+fn assemble_traced(input: &Input, cfg: &Config, trace: &mut Vec<String>) -> Option<DenseProblem> {
     let (landing_fixed, landing_node) = if cfg.landing_lexicographic {
-        match lexicographic_landing_timed(input, cfg) {
+        match landing_timed_traced(input, cfg, trace) {
             Some((dp, k)) => (Some(dp), Some(k)),
             None => (None, None),
         }
@@ -1689,7 +1708,19 @@ pub fn solve(input: &Input, cfg: &Config) -> Option<Solution> {
 pub fn solve_with_workspace(
     input: &Input,
     cfg: &Config,
+    workspace: Option<&mut Workspace>,
+) -> Option<Solution> {
+    solve_traced(input, cfg, workspace, &mut Vec::new())
+}
+
+/// [`solve_with_workspace`] with the traces [`Config::trace_landing_time`]
+/// and [`Config::trace_failures`] ask for appended to `trace`, one line each
+/// (the caller prints them, or not).
+pub fn solve_traced(
+    input: &Input,
+    cfg: &Config,
     mut workspace: Option<&mut Workspace>,
+    trace: &mut Vec<String>,
 ) -> Option<Solution> {
     if let Some(ws) = workspace.as_deref_mut() {
         ws.last_report = None;
@@ -1700,23 +1731,23 @@ pub fn solve_with_workspace(
     // disagree about) must not cost the tick. Retry once with the net-CoP
     // rows soft.
     if cfg.capture_cop_lexicographic && cfg.capture_cop_net_eq {
-        let strict = solve_with_workspace_inner(input, cfg, workspace.as_deref_mut(), assembly_started);
+        let strict = solve_with_workspace_inner(input, cfg, workspace.as_deref_mut(), assembly_started, trace);
         if strict.is_some() {
             return strict;
         }
-        if std::env::var("MPC_FS_DEBUG").is_ok() {
+        if cfg.trace_failures {
             let dp = lexicographic_landing(input, cfg);
             let plan = lexicographic_cop_with_landing(input, cfg, dp);
-            eprintln!(
+            trace.push(format!(
                 "    [lex-diag] landing={:?} dp={:?} pos0=({:.3},{:.3}) pos1=({:.3},{:.3}) cop_half0={:?} cop_half1={:?}",
                 input.landing.map(|l| (l.foot, l.first_node, l.prior, l.max, l.min)),
                 dp.map(|d| (d.x, d.y)),
                 input.contacts[0].position.x, input.contacts[0].position.y,
                 input.contacts[1].position.x, input.contacts[1].position.y,
                 input.contacts[0].cop_half, input.contacts[1].cop_half
-            );
+            ));
             if let Some(plan) = plan {
-                eprintln!("    [lex-diag] plan: {}", plan.iter().map(|p| format!("({:.3},{:.3})", p.x, p.y)).collect::<Vec<_>>().join(" "));
+                trace.push(format!("    [lex-diag] plan: {}", plan.iter().map(|p| format!("({:.3},{:.3})", p.x, p.y)).collect::<Vec<_>>().join(" ")));
             }
             // Which equality group breaks the strict problem?
             for (label, net, total, lex_land) in [
@@ -1730,8 +1761,8 @@ pub fn solve_with_workspace(
                 c.capture_cop_net_eq = net;
                 c.capture_cop_total_eq = total;
                 c.landing_lexicographic = lex_land;
-                let st = assemble(input, &c).map(|p| solve_dense(&p, &c.qp, None).status);
-                eprintln!("    [lex-diag] {label}: {st:?}");
+                let st = assemble_traced(input, &c, trace).map(|p| solve_dense(&p, &c.qp, None).status);
+                trace.push(format!("    [lex-diag] {label}: {st:?}"));
             }
         }
         let mut soft = cfg.clone();
@@ -1739,13 +1770,13 @@ pub fn solve_with_workspace(
         if soft.net_cop_weight <= 0.0 {
             soft.net_cop_weight = 10.0;
         }
-        return solve_with_workspace_inner(input, &soft, workspace, std::time::Instant::now())
+        return solve_with_workspace_inner(input, &soft, workspace, std::time::Instant::now(), trace)
             .map(|mut s| {
                 s.soft_fallback = true;
                 s
             });
     }
-    solve_with_workspace_inner(input, cfg, workspace, assembly_started)
+    solve_with_workspace_inner(input, cfg, workspace, assembly_started, trace)
 }
 
 fn solve_with_workspace_inner(
@@ -1753,8 +1784,9 @@ fn solve_with_workspace_inner(
     cfg: &Config,
     mut workspace: Option<&mut Workspace>,
     assembly_started: std::time::Instant,
+    trace: &mut Vec<String>,
 ) -> Option<Solution> {
-    let problem = assemble(input, cfg)?;
+    let problem = assemble_traced(input, cfg, trace)?;
     #[cfg(feature = "qp-hpipm")]
     let use_ocp = cfg.qp.solver == misa_wbc::qp::QpSolver::Hpipm;
     #[cfg(not(feature = "qp-hpipm"))]
@@ -1802,15 +1834,15 @@ fn solve_with_workspace_inner(
         && (!result.formally_solved()
             || !residual.accepted_with(cfg.kkt_tolerance, cfg.kkt_complementarity_tolerance))
     {
-        if std::env::var("MPC_FS_DEBUG").is_ok() {
-            eprintln!(
+        if cfg.trace_failures {
+            trace.push(format!(
                 "  [mpc-gate] status={:?} formally={} iters={} feas={:.2e}/{:.2e} stat={:.2e}/{:.2e} comp={:.2e} dual={:.2e} eq_rows={} lambda_eq={}",
                 result.status, result.formally_solved(), result.iterations,
                 residual.feasibility, residual.normalized_feasibility,
                 residual.stationarity, residual.normalized_stationarity,
                 residual.complementarity, residual.dual_violation,
                 problem.a_eq.as_ref().map_or(0, |a| a.nrows()), result.lambda_eq.len()
-            );
+            ));
         }
         return None;
     }
@@ -1818,21 +1850,21 @@ fn solve_with_workspace_inner(
     let bias = &problem.terminal_bias;
     let gravity = na::Vector3::new(0.0, 0.0, -cfg.gravity);
     if result.status != QpStatus::Optimal || result.x.iter().any(|x| !x.is_finite()) {
-        if std::env::var("MPC_FS_DEBUG").is_ok() {
-            eprintln!(
+        if cfg.trace_failures {
+            trace.push(format!(
                 "  [mpc-fail] status={:?} eq_rows={} cop_plan={:?}",
                 result.status,
                 problem.a_eq.as_ref().map_or(0, |a| a.nrows()),
                 problem.cop_plan.as_ref().map(|p| (p[0].x, p[0].y)),
-            );
+            ));
             for k in 0..cfg.horizon.min(3) {
-                eprintln!(
+                trace.push(format!(
                     "    k{k} contact={:?} act={:?} min={:?} ref={:?} pos0=({:.3},{:.3}) pos1=({:.3},{:.3}) cop_half={:?}/{:?}",
                     input.contact_schedule[k], input.activation_schedule[k], input.min_fz_schedule[k],
                     input.reference_fz_schedule[k], input.contacts[0].position.x, input.contacts[0].position.y,
                     input.contacts[1].position.x, input.contacts[1].position.y,
                     input.contacts[0].cop_half, input.contacts[1].cop_half
-                );
+                ));
             }
         }
         return None;

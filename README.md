@@ -9,6 +9,7 @@
 | `misa-biped` | 二足の歩行器: 歩容・足跡・DCM・予見制御・接触計画・届く範囲・地形・計画（`Plan`）・押しの回復・設定とプリセット（`Config`、`kv`）・WBC の段（`TaskStack`）・歩行器本体（`walker::Walker`） |
 
 依存は misarta・misa-wbc・nalgebra だけ（misa-biped は misa-mpc にも）。ライブラリは環境変数を読まず、印字もファイルの書き込みもしない（印字は `sink::LogSink`、診断は `sink::WalkerDiag` を通す）。
+MPC の診断のトレースは `wrench_mpc::Config::trace_landing_time`／`trace_failures` で頼み、`solve_traced` の行の束で受け取る（歩行器はそれを `LogSink` の err に流す。ホストの名前は `MPC_LANDING_TIME_DEBUG`／`MPC_FS_DEBUG`）。
 
 ## 使い方
 

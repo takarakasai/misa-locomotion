@@ -324,6 +324,8 @@ impl Config {
                 backend: None,
                 kkt_comp_tol: 1e-6,
                 bench_gate: false,
+                trace_landing_time: false,
+                trace_failures: false,
             },
             mpc_footstep: MpcFootstepConfig {
                 on: false,
@@ -1252,6 +1254,12 @@ pub struct WrenchMpcConfig {
     pub backend: Option<misa_wbc::QpSolver>,
     pub kkt_comp_tol: f64,
     pub bench_gate: bool,
+    /// `MPC_LANDING_TIME_DEBUG`, `MPC_FS_DEBUG` (on when set at all, as the
+    /// MPC's own reads of them were): the MPC's traces
+    /// (`misa_mpc::wrench_mpc::Config::trace_landing_time`, `trace_failures`),
+    /// written to the walker's error sink after each solve.
+    pub trace_landing_time: bool,
+    pub trace_failures: bool,
 }
 
 impl WrenchMpcConfig {

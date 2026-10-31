@@ -2527,6 +2527,8 @@ pub(crate) fn phase_wrench_mpc(
             if let Some(backend) = mpc_backend_override {
                 config.qp.solver = backend;
             }
+            config.trace_landing_time = cfg.mpc.trace_landing_time;
+            config.trace_failures = cfg.mpc.trace_failures;
             if diag.wants_mpc_input() {
                 let capture_start = std::time::Instant::now();
                 diag.mpc_input(t, dt, stair_wrench_dt, &input, &config);
@@ -2534,12 +2536,17 @@ pub(crate) fn phase_wrench_mpc(
             }
             let previous_age = ctl.diag_mpc_time.map_or(-1.0, |stamp| t - stamp);
             let mpc_solve_start = std::time::Instant::now();
-            let mpc_result = misa_mpc::wrench_mpc::solve_with_workspace(
+            let mut mpc_trace = Vec::new();
+            let mpc_result = misa_mpc::wrench_mpc::solve_traced(
                 &input,
                 &config,
                 None, // no warm start (MPC_QP_WARM removed)
+                &mut mpc_trace,
             );
             let mpc_solve_ns = mpc_solve_start.elapsed().as_nanos();
+            for line in &mpc_trace {
+                out.err_line(line);
+            }
             {
                 let mask = u8::from(stance_sides.contains(&0))
                     | (u8::from(stance_sides.contains(&1)) << 1);

@@ -488,6 +488,8 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
             }).or(d.backend),
             kkt_comp_tol: num("MPC_KKT_COMP_TOL", d.kkt_comp_tol),
             bench_gate: flag("MPC_BENCH_GATE", d.bench_gate),
+            trace_landing_time: get("MPC_LANDING_TIME_DEBUG").is_some() || d.trace_landing_time,
+            trace_failures: get("MPC_FS_DEBUG").is_some() || d.trace_failures,
         }
     };
 
