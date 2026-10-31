@@ -266,6 +266,7 @@ impl Config {
                 height_replan: true,
                 height_time: 0.60,
                 stair_climb_rate: 1.5,
+                walk_vault: 0.0,
             },
             stair_zone: StairZoneConfig { lead: 0.30, tail: 0.60 },
             contact_plan: ContactPlanConfig {
@@ -1121,6 +1122,10 @@ pub struct ComPlanConfig {
     pub height_time: f64,
     /// `STAIR_CLIMB_RATE` [risers per step].
     pub stair_climb_rate: f64,
+    /// `WALK_VAULT` [m]: walking only, the CoM rises by this much over each
+    /// single support (sin² of the slice fraction) -- an inverted-pendulum
+    /// arc over a straightening stance leg instead of a constant height.
+    pub walk_vault: f64,
 }
 
 impl ComPlanConfig {

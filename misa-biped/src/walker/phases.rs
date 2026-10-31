@@ -1933,6 +1933,7 @@ pub(crate) fn phase_height(
     // z̈ = -g + a·sin(πτ/Ts) with a = π/(2Ts)·(v1 - v0 + g·Ts).
     let slices = &plan.gait().slices;
     let i = sup.slice_idx;
+    let running = slices.iter().any(|s| s.support.is_flight());
     if sup.support.is_flight() {
         return HeightOut { z_ref: com.z, a_com: na::Vector3::new(0.0, 0.0, -G) };
     }
@@ -1951,6 +1952,22 @@ pub(crate) fn phase_height(
             let zdd = -G + a * (w * tau).sin();
             let zd = v0 - G * tau + a / w * (1.0 - (w * tau).cos());
             let z = z_ref + v0 * tau - 0.5 * G * tau * tau + a / w * (tau - (w * tau).sin() / w);
+            let a_z = zdd + kp_com * (z - com.z) + kd_com * (zd - com_vel.z);
+            return HeightOut { z_ref: z, a_com: na::Vector3::new(a_xy.x, a_xy.y, a_z) };
+        }
+    }
+    // ---- walking: inverted-pendulum vault over the stance leg --------
+    let walk_vault = cfg.com_plan.walk_vault;
+    if walk_vault > 0.0 && !running {
+        if let Support::Single { .. } = sup.support {
+            let sl = &slices[i];
+            let ts = sl.duration().max(1e-3);
+            let w = PI / ts;
+            let tau = (t - sl.t0).clamp(0.0, ts);
+            let s2 = (w * tau).sin().powi(2);
+            let z = z_ref + walk_vault * s2;
+            let zd = walk_vault * w * (2.0 * w * tau).sin();
+            let zdd = 2.0 * walk_vault * w * w * (2.0 * w * tau).cos();
             let a_z = zdd + kp_com * (z - com.z) + kd_com * (zd - com_vel.z);
             return HeightOut { z_ref: z, a_com: na::Vector3::new(a_xy.x, a_xy.y, a_z) };
         }

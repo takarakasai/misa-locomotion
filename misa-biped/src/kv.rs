@@ -413,6 +413,7 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
             height_replan: flag("COM_HEIGHT_REPLAN", d.height_replan),
             height_time: num("COM_HEIGHT_TIME", d.height_time).max(0.10),
             stair_climb_rate: num("STAIR_CLIMB_RATE", d.stair_climb_rate),
+            walk_vault: num("WALK_VAULT", d.walk_vault).max(0.0),
         }
     };
 
