@@ -382,6 +382,9 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
                 probe_speed: num("CONTACT_PROBE_VZ", d.event.probe_speed).max(0.0),
                 probe_max: num("CONTACT_PROBE_MAX", d.event.probe_max).max(0.0),
             },
+            reanchor: num("LAND_REANCHOR", d.reanchor).max(0.0),
+            reanchor_max: num("LAND_REANCHOR_MAX", d.reanchor_max).max(0.0),
+            reanchor_load: num("LAND_REANCHOR_LOAD", d.reanchor_load).max(0.0),
         }
     };
 
