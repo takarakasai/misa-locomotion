@@ -1837,7 +1837,31 @@ pub(crate) fn phase_height(
     // constant-height omega is ~20% too stiff while the CoM is being
     // driven DOWN a riser. Gated so level and validated runs are bit-
     // identical (VH_DCM=0 restores the classic form).
-    let a_xy_raw = if stairs.is_some() && vh_dcm {
+    // WALK_VAULT with VH_DCM: the same law with the vault's planned
+    // vertical acceleration -- the stance push that lifts the CoM over
+    // the leg also stiffens the horizontal response, (g + z̈)/h.
+    let vault_zdd = {
+        let wv = cfg.com_plan.walk_vault;
+        let sl = &plan.gait().slices;
+        match sup.support {
+            Support::Single { .. } if wv > 0.0 && vh_dcm && !sl.iter().any(|s| s.support.is_flight()) => {
+                let s_ = &sl[sup.slice_idx];
+                let ts = s_.duration().max(1e-3);
+                let w = PI / ts;
+                let tau = (t - s_.t0).clamp(0.0, ts);
+                Some(2.0 * wv * w * w * (2.0 * w * tau).cos())
+            }
+            _ => None,
+        }
+    };
+    let a_xy_raw = if let Some(zdd) = vault_zdd {
+        let surf = if stance_sides.is_empty() {
+            0.0
+        } else {
+            stance_sides.iter().map(|&s| steps.sole[s].z).sum::<f64>() / stance_sides.len() as f64
+        };
+        crate::dcm::com_accel_xy_vh(&com, &p_cmd, omega, zdd, surf)
+    } else if stairs.is_some() && vh_dcm {
         // Height above the surface the pressure actually acts on, which
         // on a stair is the STANCE sole -- not the fixed `z_lip` omega
         // was built from. Measured on a descent: omega^2 claims 32.9
@@ -3862,8 +3886,16 @@ pub(crate) fn phase_wbc(
     });
     let cop_patch = [0, 1].map(|_side: usize| {
         // a foot on its edge: a thin CoP strip along the edge
+        // a foot on its edge: the CoP box shrinks from the whole sole to a
+        // thin strip along the edge as the foot tilts onto it
         if let Some(e) = ctl.edge[_side] {
-            return Some((e.r_local, (0.005, k.sole_half_w)));
+            let (pitch, _) = e.pitch_at(t);
+            let full = e.pitch0.abs().max(e.pitch1.abs()).max(1e-6);
+            let f = (pitch.abs() / full).clamp(0.0, 1.0);
+            let edge_dx = e.r_local[0] - prof.sole_centre_x;
+            let half_x = k.sole_half_l * (1.0 - f) + 0.005 * f;
+            let cx = prof.sole_centre_x + edge_dx * f + (-edge_dx.signum() * 0.005) * f;
+            return Some(([cx, 0.0, e.r_local[2]], (half_x, k.sole_half_w)));
         }
         // SLOPE_HEEL_CUT [m/deg]: on a known UPSLOPE, during double
         // support, move the REAR foot's CoP box forward by
