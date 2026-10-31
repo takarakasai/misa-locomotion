@@ -167,6 +167,10 @@ impl Config {
                 kd_rot: 40.0,
                 lift_h: 0.5 * prof.lift_h,
                 run_bulge: 0.0,
+                heel_toe: false,
+                heel_strike_deg: 6.0,
+                toe_off_deg: 12.0,
+                heel_roll_time: 0.10,
                 rot_mode: 1,
                 zone_rot_mode: 0,
                 tracking_cubic_ff: false,
@@ -935,6 +939,14 @@ pub struct SwingConfig {
     /// `RUN_SWING_BULGE`: running only, the airborne foot bows outward by
     /// this much mid-swing (sin² profile) to clear the stance leg [m].
     pub run_bulge: f64,
+    /// `HEEL_TOE`: walking with heel strike and toe-off -- the landing
+    /// foot comes down toe-up (`HEEL_STRIKE_DEG`) on its heel edge and rolls
+    /// flat over `HEEL_ROLL_TIME` [s]; the rear foot rolls onto its toe edge
+    /// through the double support, heel rising to `TOE_OFF_DEG`.
+    pub heel_toe: bool,
+    pub heel_strike_deg: f64,
+    pub toe_off_deg: f64,
+    pub heel_roll_time: f64,
     /// `SWING_ROT` (0 translation, 1 +yaw, 2 full pose, 3 no yaw), and
     /// `STAIR_ZONE_SWING_ROT` (non-negative) inside a stair zone (0 = the same).
     pub rot_mode: u32,

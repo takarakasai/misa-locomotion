@@ -644,6 +644,67 @@ pub(crate) fn phase_support(
     // anchor. Doing it on the schedule (rather than lazily, the way
     // standing did with get_or_insert) is what makes a foot that has been
     // somewhere else since stop arguing for where it used to be.
+    // ---- heel strike / toe-off (HEEL_TOE, walking) --------------------
+    let heel_toe = cfg.swing.heel_toe && !plan.gait().slices.iter().any(|s| s.support.is_flight());
+    if heel_toe {
+        // a heel roll that has finished: re-anchor the foot flat where it is
+        for side in 0..2 {
+            if let Some(e) = ctl.edge[side]
+                && e.heel
+                && t >= e.t0 + e.dur
+            {
+                let mi = robot.foot_mi[side];
+                let mut p = misarta::se3::translation(&data.oMi[mi]);
+                p.z = steps.sole[side].z + prof.sole_below_origin;
+                anchor_events.push(AnchorEvent::Touchdown { side, pos: p, rot: e.r0 });
+                ctl.edge[side] = None;
+            }
+        }
+    }
+    if heel_toe && support != ctl.prev_support {
+        let (hl, _) = prof.cop_half;
+        let edge_at = |side: usize, x: f64, data: &misarta::data::Data<f64>| {
+            let mi = robot.foot_mi[side];
+            let r = misarta::se3::rotation_matrix(&data.oMi[mi]);
+            let o = misarta::se3::translation(&data.oMi[mi]);
+            let r_local = [prof.sole_centre_x + x, 0.0, -prof.sole_below_origin];
+            let p = o + r * na::Vector3::new(r_local[0], r_local[1], r_local[2]);
+            // flat orientation at the foot's yaw, and the pitch from it
+            let yaw = r[(1, 0)].atan2(r[(0, 0)]);
+            let (sy, cy) = yaw.sin_cos();
+            let r0 = na::Matrix3::new(cy, -sy, 0.0, sy, cy, 0.0, 0.0, 0.0, 1.0);
+            let rel = r0.transpose() * r;
+            let pitch = rel[(0, 2)].atan2(rel[(2, 2)]);
+            (r_local, p, r0, pitch)
+        };
+        match (ctl.prev_support, support) {
+            (Support::Single { stance, swing }, Support::Double) => {
+                // the landing foot rolls down from its heel ...
+                let (r_local, mut p, r0, pitch) = edge_at(swing, -hl, data);
+                p.z = steps.sole[swing].z;
+                ctl.edge[swing] = Some(crate::walker::EdgeState {
+                    r_local, p_anchor: p, r0, pitch0: pitch.min(0.0), pitch1: 0.0,
+                    t0: t, dur: cfg.swing.heel_roll_time.max(1e-3), heel: true,
+                });
+                // ... while the rear foot rolls onto its toe
+                let (r_local, mut p, r0, pitch) = edge_at(stance, hl, data);
+                p.z = steps.sole[stance].z;
+                ctl.edge[stance] = Some(crate::walker::EdgeState {
+                    r_local, p_anchor: p, r0, pitch0: pitch.max(0.0), pitch1: cfg.swing.toe_off_deg.to_radians(),
+                    t0: t, dur: {
+                        // the whole double-support run (settles included)
+                        let sl = &plan.gait().slices;
+                        let end = (slice_idx..sl.len()).find(|&j| !matches!(sl[j].support, Support::Double)).map_or(slice.t1, |j| sl[j].t0);
+                        (end - t).max(1e-3)
+                    }, heel: false,
+                });
+            }
+            (Support::Double, Support::Single { swing, .. }) => {
+                ctl.edge[swing] = None;
+            }
+            _ => {}
+        }
+    }
     if support != ctl.prev_support {
         for side in 0..2 {
             if ctl.prev_support.is_stance(side) && !support.is_stance(side) {
@@ -2879,6 +2940,8 @@ pub(crate) fn phase_task_refs(
     let stair_swing_ff = cfg.swing.stair_ff;
     let lift_h = cfg.swing.lift_h;
     let run_bulge = cfg.swing.run_bulge;
+    let heel_toe_walk = cfg.swing.heel_toe && !plan.gait().slices.iter().any(|s| s.support.is_flight());
+    let heel_strike_deg = cfg.swing.heel_strike_deg;
     // (CONTACT_FZ_RATE, a load-split damper on the measured normal force,
     // was FALSIFIED -- worse than undamped at every weight -- and is
     // removed, as is DS_FZ_FLOOR_WEIGHT / _BW, a soft double-support load
@@ -3579,9 +3642,18 @@ pub(crate) fn phase_task_refs(
                     _ => SwingAxes::XyzYaw,
                 }
             };
+            let heel_toe_swing = heel_toe_walk;
+            let axes = if heel_toe_swing { SwingAxes::Pose } else { axes };
             let rot = {
                 let mut rot_tgt =
                     foot_rot_at(side, plan.footsteps().at_slice(slice_idx).yaw[side]);
+                if heel_toe_swing {
+                    // toe up for the heel strike over the second half of the swing
+                    let u = ((swing_fraction - 0.4) / 0.4).clamp(0.0, 1.0);
+                    let th = -heel_strike_deg.to_radians() * u * u * (3.0 - 2.0 * u);
+                    let (sp, cp) = th.sin_cos();
+                    rot_tgt *= na::Matrix3::new(cp, 0.0, sp, 0.0, 1.0, 0.0, -sp, 0.0, cp);
+                }
                 if terrain_pitch && let Some(st) = &stairs {
                     let th = st.pitch_at(plan.footsteps().at_slice(slice_idx).sole[side].x);
                     if th != 0.0 {
@@ -3781,11 +3853,18 @@ pub(crate) fn phase_wbc(
                 normal_weight: 1.0,
                 normal_accel_max: stair_managed_az_max,
             }
+        } else if let Some(e) = ctl.edge[side] {
+            let (pitch, pitch_rate) = e.pitch_at(t);
+            ContactMode::Edge { r_local: e.r_local, p_anchor: e.p_anchor, r0: e.r0, pitch, pitch_rate }
         } else {
             ContactMode::Rigid
         }
     });
     let cop_patch = [0, 1].map(|_side: usize| {
+        // a foot on its edge: a thin CoP strip along the edge
+        if let Some(e) = ctl.edge[_side] {
+            return Some((e.r_local, (0.005, k.sole_half_w)));
+        }
         // SLOPE_HEEL_CUT [m/deg]: on a known UPSLOPE, during double
         // support, move the REAR foot's CoP box forward by
         // cut * slope_deg and shrink it by the same, so its heel

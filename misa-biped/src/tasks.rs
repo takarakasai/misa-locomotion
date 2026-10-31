@@ -532,6 +532,17 @@ pub enum ContactMode {
         normal_weight: f64,
         normal_accel_max: f64,
     },
+    /// Rolling on a sole edge (heel strike / toe-off): the edge point
+    /// `r_local` (foot-link frame) is held at `p_anchor`, and the foot's
+    /// orientation follows `r0` pitched by `pitch` about the sole y axis
+    /// (rate `pitch_rate`), so the foot rotates about the edge.
+    Edge {
+        r_local: [f64; 3],
+        p_anchor: na::Vector3<f64>,
+        r0: na::Matrix3<f64>,
+        pitch: f64,
+        pitch_rate: f64,
+    },
 }
 
 pub struct ContactLevel {
@@ -639,6 +650,32 @@ pub fn contact_level(
                     )
                     .weight(normal_weight);
                     rotation + tangent + normal
+                }
+                ContactMode::Edge { r_local, p_anchor, r0, pitch, pitch_rate } => {
+                    let rr = rot * na::Vector3::new(r_local[0], r_local[1], r_local[2]);
+                    let w = na::Vector3::new(vel[0], vel[1], vel[2]);
+                    let v_o = na::Vector3::new(vel[3], vel[4], vel[5]);
+                    let sk = rr.cross_matrix();
+                    let jw = js.rows(0, 3).into_owned();
+                    let jp = js.rows(3, 3).into_owned() - &sk * &jw;
+                    let dw = na::Vector3::new(djvs[0], djvs[1], djvs[2]);
+                    let dv = na::Vector3::new(djvs[3], djvs[4], djvs[5]);
+                    let bias_p = dv - sk * dw + w.cross(&w.cross(&rr));
+                    let p = pos + rr;
+                    let v_p = v_o + w.cross(&rr);
+                    let a_p = (p_anchor - p) * cfg.kp_c - v_p * cfg.kd_c;
+                    // desired orientation: r0 pitched about its own y axis
+                    let (sp, cp) = pitch.sin_cos();
+                    let ry = na::Matrix3::new(cp, 0.0, sp, 0.0, 1.0, 0.0, -sp, 0.0, cp);
+                    let rd = r0 * ry;
+                    let m = rd * rot.transpose() - rot * rd.transpose();
+                    let e = na::Vector3::new(m[(2, 1)], m[(0, 2)], m[(1, 0)]) * 0.5;
+                    let wd = r0.column(1).into_owned() * pitch_rate;
+                    let alpha = e * cfg.kp_c + (wd - w) * cfg.kd_c;
+                    let jrow = na::DMatrix::from_fn(6, js.ncols(), |r, c| if r < 3 { jw[(r, c)] } else { jp[(r - 3, c)] });
+                    let bias = na::DVector::from_column_slice(&[dw[0], dw[1], dw[2], bias_p[0], bias_p[1], bias_p[2]]);
+                    let refv = na::DVector::from_column_slice(&[alpha[0], alpha[1], alpha[2], a_p[0], a_p[1], a_p[2]]);
+                    wt::cartesian_acceleration(dyn_ctx.qddot(), &jrow, &bias, &refv)
                 }
             };
         if !cfg.no_patch {

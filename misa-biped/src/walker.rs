@@ -87,6 +87,8 @@ pub(crate) struct CtlState {
     /// Running: where and when each foot last left the ground (its own
     /// swing spans flight + the other foot's stance + flight).
     pub run_lift_off: [Option<(na::Vector3<f64>, f64)>; 2],
+    /// Heel strike / toe-off: the edge each foot is rolling on, if any.
+    pub edge: [Option<EdgeState>; 2],
     /// Load-change rate per foot (the managed-contact trigger).
     pub fz_prev: [f64; 2],
     pub fz_rate_ema: [f64; 2],
@@ -1027,6 +1029,7 @@ impl WalkerInit {
             prev_support: plan.gait().support_at(0.0),
             swing_lift_off: None,
             run_lift_off: [None, None],
+            edge: [None, None],
             fz_prev: [0.0; 2],
             fz_rate_ema: [0.0; 2],
             managed_until: [f64::NEG_INFINITY; 2],
@@ -1320,4 +1323,30 @@ impl<S: WbcStack> Walker<S> {
         &self.k.command
     }
 }
+/// A foot rolling on its heel or toe edge (HEEL_TOE).
+#[derive(Clone, Copy, Debug)]
+pub struct EdgeState {
+    /// Edge point in the foot-link frame, and where it is held (world).
+    pub r_local: [f64; 3],
+    pub p_anchor: na::Vector3<f64>,
+    /// The flat foot orientation the pitch is measured from.
+    pub r0: na::Matrix3<f64>,
+    /// Pitch about the sole y axis from `pitch0` to `pitch1` over [t0, t0 + dur].
+    pub pitch0: f64,
+    pub pitch1: f64,
+    pub t0: f64,
+    pub dur: f64,
+    /// true = heel (ends flat, re-anchored), false = toe (ends at lift-off).
+    pub heel: bool,
+}
+
+impl EdgeState {
+    pub fn pitch_at(&self, t: f64) -> (f64, f64) {
+        let u = ((t - self.t0) / self.dur.max(1e-6)).clamp(0.0, 1.0);
+        let s = u * u * (3.0 - 2.0 * u);
+        let ds = if (0.0..1.0).contains(&u) { 6.0 * u * (1.0 - u) / self.dur.max(1e-6) } else { 0.0 };
+        (self.pitch0 + (self.pitch1 - self.pitch0) * s, (self.pitch1 - self.pitch0) * ds)
+    }
+}
+
 
