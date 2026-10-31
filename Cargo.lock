@@ -571,7 +571,7 @@ dependencies = [
 [[package]]
 name = "misa-wbc"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misa-wbc.git?branch=articara-qp-ocp#4557bfa9ced9717232a939ddd415607c93774d79"
+source = "git+https://github.com/takarakasai/misa-wbc.git#b76eba5ba2761506a27de35ad0cee1b2b0c44afe"
 dependencies = [
  "cc",
  "clarabel",

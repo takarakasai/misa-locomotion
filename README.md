@@ -38,7 +38,7 @@ MuJoCo の試験の土台（機体のシーン、家族ベンチ）は articara 
 
 ## 依存の misa-wbc
 
-QP の診断・OCP・外部ソルバの feature を使うため、いまは misa-wbc のブランチ `articara-qp-ocp` を読む。main に合流したら `branch` を外す。
+misa-wbc の main（b76eba5 以降）を読む。QP の診断・OCP・外部ソルバの feature は、articara から戻したこのコミットで main に入った。
 
 ## テスト
 

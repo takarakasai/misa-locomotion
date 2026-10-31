@@ -6,7 +6,7 @@ license = "Apache-2.0"
 description = "Centroidal (single-rigid-body) wrench MPC for legged robots, on misa-wbc's QP layer"
 
 [dependencies]
-misa-wbc = { git = "https://github.com/takarakasai/misa-wbc.git", branch = "articara-qp-ocp" }
+misa-wbc = { git = "https://github.com/takarakasai/misa-wbc.git" }
 nalgebra = "0.34.2"
 
 [features]
