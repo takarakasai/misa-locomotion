@@ -1,20 +1,19 @@
-//! The presets against the controls they came from, through the harness's
-//! own key table (examples/kyo46rs_walk/config_env.rs, included as a module
-//! so the table the walker runs with is the one under test). An environment
+//! The presets against the controls they came from (copied into
+//! tests/fixtures from articara's log/), through the key table hosts read
+//! their knobs with (`misa_biped::kv`). An environment
 //! holding exactly a controls file's keys must give the preset, field for
 //! field; and an empty one, the code defaults.
 use misa_biped::config::Config;
 use misa_biped::profile;
 use std::collections::HashMap;
 
-#[path = "../../../examples/kyo46rs_walk/config_env.rs"]
-mod config_env;
+use misa_biped::kv as config_env;
 
 /// A flat JSON object of string values (the shape of every controls file),
 /// read without a JSON crate: misa-biped has none, and the files are written
 /// by `json.dump` of a str -> str dict.
 fn flat_json(rel: &str) -> HashMap<String, String> {
-    let path = format!("{}/../../{rel}", env!("CARGO_MANIFEST_DIR"));
+    let path = format!("{}/tests/fixtures/{rel}", env!("CARGO_MANIFEST_DIR"));
     let s = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
     assert!(!s.contains('\\'), "{path}: escapes are not supported");
     let t: Vec<&str> = s.split('"').collect();
@@ -37,20 +36,20 @@ fn from_file(prof: &profile::Profile, rel: &str) -> Config {
 
 #[test]
 fn g1_v619_is_its_controls() {
-    let c = from_file(&profile::G1_23DOF, "log/claude_g1champion_20261029v619/controls.json");
+    let c = from_file(&profile::G1_23DOF, "g1_v619.json");
     assert_eq!(c, Config::g1_v619());
 }
 
 #[test]
 fn kyo46rs_v2_is_its_controls() {
     // ROBOT unset in the file: the harness's `by_name("")`.
-    let c = from_file(&profile::by_name(""), "log/claude_g1rand_20260925/kyo_base_v2.json");
+    let c = from_file(&profile::by_name(""), "kyo46rs_v2.json");
     assert_eq!(c, Config::kyo46rs_v2());
 }
 
 #[test]
 fn kyo46rs_v3_is_its_controls() {
-    let c = from_file(&profile::by_name(""), "log/claude_g1rand_20260925/kyo_base_v3.json");
+    let c = from_file(&profile::by_name(""), "kyo46rs_v3.json");
     assert_eq!(c, Config::kyo46rs_v3());
     // v3's five stair-zone keys over v2 are the whole difference.
     let mut v2 = Config::kyo46rs_v2();
@@ -96,9 +95,9 @@ fn walker_preset_is_the_base() {
     assert_eq!(config_env::config_from_kv(&profile::by_name(""), &|k| kv.get(k).cloned()), Config::kyo46rs_v3());
     // Under its own controls the preset is unchanged (every key restates it).
     for (prof, rel, preset, want) in [
-        (profile::G1_23DOF, "log/claude_g1champion_20261029v619/controls.json", "g1_v619", Config::g1_v619()),
-        (profile::by_name(""), "log/claude_g1rand_20260925/kyo_base_v2.json", "kyo46rs_v2", Config::kyo46rs_v2()),
-        (profile::by_name(""), "log/claude_g1rand_20260925/kyo_base_v3.json", "kyo46rs_v3", Config::kyo46rs_v3()),
+        (profile::G1_23DOF, "g1_v619.json", "g1_v619", Config::g1_v619()),
+        (profile::by_name(""), "kyo46rs_v2.json", "kyo46rs_v2", Config::kyo46rs_v2()),
+        (profile::by_name(""), "kyo46rs_v3.json", "kyo46rs_v3", Config::kyo46rs_v3()),
     ] {
         let mut kv = flat_json(rel);
         kv.insert("WALKER_PRESET".into(), preset.into());

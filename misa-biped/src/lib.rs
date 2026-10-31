@@ -44,6 +44,7 @@ pub mod height;
 pub mod plan;
 pub mod recovery;
 pub mod config;
+pub mod kv;
 pub mod robot;
 pub mod wbc;
 pub mod contact;

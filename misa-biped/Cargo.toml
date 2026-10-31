@@ -7,7 +7,7 @@ description = "Biped gait planning: footsteps, DCM reference, preview control, c
 
 [dependencies]
 misarta = { git = "https://github.com/takarakasai/misarta.git" }
-misa-wbc = { git = "https://github.com/takarakasai/misa-wbc.git" }
+misa-wbc = { git = "https://github.com/takarakasai/misa-wbc.git", branch = "articara-qp-ocp" }
 # The wrench MPC the walker plans its contact forces with (same repository;
 # its own dependencies are misa-wbc and nalgebra only).
 misa-mpc = { path = "../misa-mpc" }
