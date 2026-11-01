@@ -239,6 +239,10 @@ impl Config {
                 admit_scheduled: false,
                 admit_z: 0.010,
                 admit_loaded: None,
+                cop_leash: 0.0,
+                cop_leash_tilt: 0.0,
+                cop_leash_fz: 0.15,
+                cop_leash_mpc: false,
             },
             managed: ManagedContactConfig {
                 on: true,
@@ -331,6 +335,12 @@ impl Config {
                 apply: false,
                 coupled: true,
                 node_centre: false,
+                forecast_swing_only: false,
+                schedule_early_fz: 0.0,
+                cop_scale_x: 1.0,
+                auth_fz_ratio: 0.0,
+                auth_stair_off: false,
+                auth_tilt: 0.0,
                 net_cop_w: 0.0,
                 seed_previous: 0,
                 w_pos: 20.0,
@@ -603,6 +613,53 @@ impl Config {
         c.stair_plan.align_stand_line = true;
         c.descent.zone_crouch = 0.02;
         c.swing.zone_rot_mode = 3;
+        c
+    }
+
+    /// kyo46rs base v4 (2026-11-01, doc/from_claude/20261031_kyo46rs_push_recovery.md
+    /// §13, candidate kl9): [`Config::kyo46rs_v3`] with the push recovery of
+    /// §5-§10 (the wrench MPC applied, its footstep variables off the stair
+    /// zone, PUSH_REPLAN with its trigger low-passed) and the CoP leash of
+    /// §13. Checked against articara's controls by tests/presets.rs.
+    pub fn kyo46rs_v4() -> Self {
+        let mut c = Self::kyo46rs_v3();
+        // The wrench MPC, applied (G1's nine keys).
+        c.mpc.enabled = true;
+        c.mpc.always = true;
+        c.mpc.apply = true;
+        c.mpc.coupled = false;
+        c.mpc.node_centre = true;
+        c.mpc.net_cop_w = 10.0;
+        c.mpc.seed_previous = 2;
+        c.mpc.w_smooth = 10.0;
+        c.mpc.sole_authority = true;
+        // Its footstep variables at half G1's reach, no inward step, off the
+        // stair zone.
+        c.mpc_footstep.on = true;
+        c.mpc_footstep.w = 100.0;
+        c.mpc_footstep.trig = 0.0075;
+        c.mpc_footstep.max = [0.075, 0.04];
+        c.mpc_footstep.max_y_in = 0.0;
+        c.mpc_footstep.y_in_fwd = 0.0;
+        c.mpc_footstep.capture_w = 1e6;
+        c.mpc_footstep.capture_j = true;
+        c.mpc_footstep.lex = true;
+        c.mpc_footstep.stair_off = true;
+        // PUSH_REPLAN in every direction, no stand, no ramp; the push
+        // trigger low-passed at 5 Hz.
+        c.push_replan.trig = 0.03;
+        c.push_replan.max_fwd = 0.15;
+        c.push_replan.max_back = 0.15;
+        c.push_replan.min_w = 0.06;
+        c.push_replan.max_w = 0.20;
+        c.push_replan.hold = 10.0;
+        c.push_replan.stand = 0;
+        c.push_replan.ramp = 0;
+        c.dcm.trig_lpf_hz = 5.0;
+        // The CoP leash: 5 mm, tilted soles only, on the MPC's box too.
+        c.contact.cop_leash = 0.005;
+        c.contact.cop_leash_tilt = 0.02;
+        c.contact.cop_leash_mpc = true;
         c
     }
 
@@ -1115,6 +1172,23 @@ pub struct ContactConfig {
     pub admit_scheduled: bool,
     pub admit_z: f64,
     pub admit_loaded: Option<(f64, f64)>,
+    /// `COP_LEASH` [m] (0 = off): keep a loaded stance foot's CoP box
+    /// (fore/aft) within this distance of the CoP its sole MEASURES
+    /// ([`crate::robot::Observation::sole_cop`], an ankle F/T). A sole
+    /// resting on an unmodelled edge carries no pressure past it: the
+    /// measured CoP stops at the edge while the commanded one runs on to
+    /// the box end and the foot seesaws over it (kyo46rs, 5 mm bumps,
+    /// 2026-11-01). A foot that tips about its own toe or heel measures its
+    /// CoP at that edge, so the leash does not bind there.
+    pub cop_leash: f64,
+    /// `COP_LEASH_TILT` [rad] (0 = always): leash only a sole tilted more
+    /// than this from level (measured, the FK).
+    pub cop_leash_tilt: f64,
+    /// `COP_LEASH_FZ` (fraction of body weight): leash only a foot whose
+    /// measured load is at least this.
+    pub cop_leash_fz: f64,
+    /// `COP_LEASH_MPC`: give the wrench MPC the same box.
+    pub cop_leash_mpc: bool,
 }
 
 impl ContactConfig {
@@ -1339,6 +1413,41 @@ pub struct WrenchMpcConfig {
     pub w_smooth: f64,
     /// `MPC_SOLE_AUTHORITY`.
     pub sole_authority: bool,
+    /// `MPC_FORECAST_SWING_ONLY`: place a foot at its forecast landing only
+    /// while the gait has it swinging. Off = any foot outside the measured
+    /// stance set goes to its forecast, so a scheduled-down foot that rocks
+    /// off its contact on an unmodelled bump is told to the MPC at its NEXT
+    /// landing (measured 2026-11-01: 4 cm ahead of the loaded foot, the MPC
+    /// asked for 1.9x the weight and the robot launched).
+    pub forecast_swing_only: bool,
+    /// `MPC_SCHEDULE_EARLY_FZ` [N]: when the swing foot already carries more
+    /// than this (an early touchdown), the rest of its swing slice is double
+    /// support in the MPC's contact schedule. 0 = off = the gait's schedule,
+    /// under which (measured 2026-11-01, kbump05 / kdesc r-0.020) the foot
+    /// that landed early may carry nothing and the stance sole is driven to
+    /// its box edge.
+    pub schedule_early_fz: f64,
+    /// `MPC_COP_SCALE_X`: the MPC's own fore/aft CoP box as a fraction of
+    /// the sole's (the WBC's box is unchanged; rolling strips unchanged).
+    /// 1 = the sole's = shipped. Measured 2026-11-01: under the sole
+    /// authority the MPC drove a stance sole resting on an unmodelled 5 mm
+    /// bump to its toe edge (+49 mm) where the real support ended at +8 mm.
+    pub cop_scale_x: f64,
+    /// `MPC_AUTH_FZ_RATIO`: withhold `MPC_SOLE_AUTHORITY` (fall back to the
+    /// blend) on a tick whose MPC command totals more vertical force than
+    /// this many body weights. 0 = off. Measured 2026-11-01: on a 5 mm bump
+    /// and the 20 mm step-down the stance sole tipped, its contact switched
+    /// to the rolling strip, the MPC asked for 1.9x the weight and the
+    /// authority handed it to the WBC (torque saturation, both feet off).
+    pub auth_fz_ratio: f64,
+    /// `MPC_AUTH_STAIR_OFF`: withhold `MPC_SOLE_AUTHORITY` in the stair zone
+    /// (the test of `MPC_FOOTSTEP_STAIR_OFF`). `MPC_AUTH_TILT` [rad]: withhold
+    /// it while a stance sole is tilted more than this from level (an
+    /// unmodelled bump under it). Read at each MPC solve. Off = false / 0.
+    /// Measured 2026-11-01: the authority is what wins the swing-side 0.9 N s
+    /// push (24 -> 43 of 48) and what loses the 20 mm step-down (24 -> 14).
+    pub auth_stair_off: bool,
+    pub auth_tilt: f64,
     /// `STAIR_WRENCH_DT`, `STAIR_WRENCH_PREVIEW_DT` [s] (at least the control
     /// period, at the use), `STAIR_WRENCH_N` (at least 2),
     /// `STAIR_WRENCH_LOW_MIN` (0..0.45), `STAIR_WRENCH_BLEND` (0..1).

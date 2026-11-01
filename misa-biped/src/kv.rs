@@ -53,8 +53,8 @@ pub fn profile_from_kv(mut prof: Profile, get: &dyn Fn(&str) -> Option<String>) 
 }
 
 /// The Config a run starts from (S17): `WALKER_PRESET=g1_v619`, `kyo46rs_v2`
-/// or `kyo46rs_v3` names a preset ([`Config::g1_v619`], [`Config::kyo46rs_v2`],
-/// [`Config::kyo46rs_v3`]),
+/// `kyo46rs_v3` or `kyo46rs_v4` names a preset ([`Config::g1_v619`], [`Config::kyo46rs_v2`],
+/// [`Config::kyo46rs_v3`], [`Config::kyo46rs_v4`]),
 /// unset is [`Config::code_defaults`] of the robot. A preset is made for one
 /// robot; naming it for another panics (its profile-derived values would be
 /// the wrong robot's).
@@ -73,7 +73,11 @@ pub fn base_config(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> Conf
             assert_eq!(prof.name, crate::profile::KYO46RS.name, "WALKER_PRESET=kyo46rs_v3 is the kyo46rs preset (ROBOT unset or kyo46rs)");
             Config::kyo46rs_v3()
         }
-        Some(other) => panic!("unknown WALKER_PRESET={other:?} (g1_v619 | kyo46rs_v2 | kyo46rs_v3)"),
+        Some("kyo46rs_v4") => {
+            assert_eq!(prof.name, crate::profile::KYO46RS.name, "WALKER_PRESET=kyo46rs_v4 is the kyo46rs preset (ROBOT unset or kyo46rs)");
+            Config::kyo46rs_v4()
+        }
+        Some(other) => panic!("unknown WALKER_PRESET={other:?} (g1_v619 | kyo46rs_v2 | kyo46rs_v3 | kyo46rs_v4)"),
     }
 }
 
@@ -377,6 +381,10 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
                 let mut it = v.split(',').map(|x| x.trim().parse::<f64>().ok());
                 Some((it.next()??.max(0.0), it.next()??.max(0.0)))
             }).or(d.admit_loaded),
+            cop_leash: num("COP_LEASH", d.cop_leash).max(0.0),
+            cop_leash_tilt: num("COP_LEASH_TILT", d.cop_leash_tilt).max(0.0),
+            cop_leash_fz: num("COP_LEASH_FZ", d.cop_leash_fz).max(0.0),
+            cop_leash_mpc: flag("COP_LEASH_MPC", d.cop_leash_mpc),
         }
     };
 
@@ -497,6 +505,12 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
             apply: flag("WRENCH_MPC_APPLY", d.apply),
             coupled: flag("STAIR_WRENCH_COUPLED", d.coupled),
             node_centre: flag("MPC_NODE_CENTRE", d.node_centre),
+            forecast_swing_only: flag("MPC_FORECAST_SWING_ONLY", d.forecast_swing_only),
+            schedule_early_fz: num("MPC_SCHEDULE_EARLY_FZ", d.schedule_early_fz).max(0.0),
+            cop_scale_x: num("MPC_COP_SCALE_X", d.cop_scale_x).clamp(0.05, 1.0),
+            auth_fz_ratio: num("MPC_AUTH_FZ_RATIO", d.auth_fz_ratio).max(0.0),
+            auth_stair_off: flag("MPC_AUTH_STAIR_OFF", d.auth_stair_off),
+            auth_tilt: num("MPC_AUTH_TILT", d.auth_tilt).max(0.0),
             net_cop_w: num("MPC_NET_COP_W", d.net_cop_w).max(0.0),
             seed_previous: num("MPC_SEED_PREVIOUS", d.seed_previous as f64) as i32,
             w_pos: num("MPC_W_POS", d.w_pos).max(0.0),

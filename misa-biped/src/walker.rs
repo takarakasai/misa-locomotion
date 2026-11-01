@@ -115,6 +115,8 @@ pub(crate) struct CtlState {
     pub mpc_fs_applied: na::Vector2<f64>,
     pub mpc_fs_armed: Option<(usize, usize)>,
     pub mpc_fs_last: na::Vector2<f64>,
+    /// MPC_AUTH_STAIR_OFF / MPC_AUTH_TILT: the authority is withheld (set at each MPC solve).
+    pub mpc_auth_veto: bool,
     /// PUSH_TRIG_LPF_HZ: the low-passed DCM error the push triggers read.
     pub trig_err_f: Option<na::Vector2<f64>>,
     /// The held MPC answer's diagnostics, read only by the logs: the
@@ -1058,6 +1060,7 @@ impl WalkerInit {
             mpc_fs_applied: na::Vector2::zeros(),
             mpc_fs_armed: None,
             mpc_fs_last: na::Vector2::zeros(),
+            mpc_auth_veto: false,
             trig_err_f: None,
             diag_mpc_reference: [f64::NAN; 2],
             diag_mpc_time: None,
@@ -1155,6 +1158,7 @@ impl<S: WbcStack> Walker<S> {
             tick: obs.tick,
             state: &state,
             contact_fz: obs.contact_fz,
+            sole_cop: obs.sole_cop,
             // The joint angles the posture levels read: the plant's (LEAK,
             // §6.6), or the estimate's under JOINT_Q_EST.
             joint_pos: if wcfg.wbc.joint_q_estimate { &obs.estimate.joint_q } else { obs.joint_pos_plant },
