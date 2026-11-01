@@ -186,7 +186,19 @@ pub(crate) fn cop_leash_box(
     let m = obs.sole_cop[side]?;
     if c.cop_leash_tilt > 0.0 {
         let r = misarta::se3::rotation_matrix(&obs_state(obs).data.oMi[k.robot.foot_mi[side]]);
-        if r[(2, 2)].clamp(-1.0, 1.0).acos() < c.cop_leash_tilt {
+        // Tilt off the surface the foot stands on: a known slope
+        // (TERRAIN_PITCH) tilts the whole sole, which is not the seesaw --
+        // measured from the vertical the gate stayed open all along a 5°
+        // slope and G1 fell on every one (0/48, 2026-11-01). The swing
+        // targets the same surface (toe up by the slope: about world y by
+        // -th), so its normal is (-sin th, 0, cos th). Level ground and
+        // treads have th = 0, i.e. the vertical as before.
+        let th = match (&k.stairs, cfg.slope.terrain_pitch) {
+            (Some(st), true) => st.pitch_at(sup.steps.sole[side].x),
+            _ => 0.0,
+        };
+        let cos_tilt = if th == 0.0 { r[(2, 2)] } else { -th.sin() * r[(0, 2)] + th.cos() * r[(2, 2)] };
+        if cos_tilt.clamp(-1.0, 1.0).acos() < c.cop_leash_tilt {
             return None;
         }
     }
