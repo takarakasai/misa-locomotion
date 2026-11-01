@@ -2045,6 +2045,10 @@ pub(crate) fn phase_wrench_mpc(
     let stair_wrench_horizon = cfg.mpc.horizon;
     // Align the fz schedules with `contact_schedule` (node centre).
     let mpc_node_centre = cfg.mpc.node_centre;
+    let mpc_forecast_swing_only = cfg.mpc.forecast_swing_only;
+    let mpc_schedule_early_fz = cfg.mpc.schedule_early_fz;
+    let mpc_cop_scale_x = cfg.mpc.cop_scale_x;
+    let (mpc_auth_stair_off, mpc_auth_tilt) = (cfg.mpc.auth_stair_off, cfg.mpc.auth_tilt);
     let stair_wrench_low_min = cfg.mpc.low_min;
     // 0 = off, 1 = seed the FIRST solve from the measured load, 2 = anchor
     // EVERY solve to the measured load (the stair-transfer ramp's rule, made
@@ -2272,6 +2276,8 @@ pub(crate) fn phase_wrench_mpc(
                 let rolling = stair_hybrid_contact && s_pitch.abs() >= 0.087;
                 let cop_half = if rolling {
                     (0.006, contact_cfg.cop_half.1)
+                } else if mpc_cop_scale_x < 1.0 {
+                    (contact_cfg.cop_half.0 * mpc_cop_scale_x, contact_cfg.cop_half.1)
                 } else {
                     contact_cfg.cop_half
                 };
@@ -2305,7 +2311,10 @@ pub(crate) fn phase_wrench_mpc(
                     end - 1e-9,
                 );
                 for side in 0..2 {
-                    if !stance_sides.contains(&side) {
+                    if !stance_sides.contains(&side)
+                        && (!mpc_forecast_swing_only
+                            || matches!(plan.gait().support_at(t), Support::Single { swing, .. } if swing == side))
+                    {
                         let yaw = fc.yaw[side];
                         let (sy, cy) = yaw.sin_cos();
                         let rot = na::Matrix3::new(cy, -sy, 0.0, sy, cy, 0.0, 0.0, 0.0, 1.0);
@@ -2313,6 +2322,25 @@ pub(crate) fn phase_wrench_mpc(
                         contacts[side].rotation = rot;
                     }
                 }
+            }
+            if mpc_auth_stair_off || mpc_auth_tilt > 0.0 {
+                let in_stairs = mpc_auth_stair_off
+                    && k.stairs.as_ref().is_some_and(|st| {
+                        (st.riser.abs() > 1e-6 || st.down_n > 0)
+                            && crate::height::stair_zone_crouch(
+                                plan.footsteps().at_slice(plan.gait().index_at(t)).mid_xy().x,
+                                st,
+                                cfg.stair_zone.lead,
+                                cfg.stair_zone.tail,
+                                1.0,
+                            ) > 0.0
+                    });
+                let tilted = mpc_auth_tilt > 0.0
+                    && stance_sides.iter().any(|&s| {
+                        let r = misarta::se3::rotation_matrix(&data.oMi[robot.foot_mi[s]]);
+                        r[(2, 2)].clamp(-1.0, 1.0).acos() > mpc_auth_tilt
+                    });
+                ctl.mpc_auth_veto = in_stairs || tilted;
             }
             let cmm = cent.cmm();
             let h = cmm * v_dvec;
@@ -2506,11 +2534,25 @@ pub(crate) fn phase_wrench_mpc(
                 // gave a solution that, once applied (WRENCH_MPC_APPLY),
                 // could not walk at all (0/192, measured 2026-09-24).
                 contact_schedule: if wrench_mpc_apply {
+                    let i_now = plan.gait().index_at(t);
+                    let early_swing = match plan.gait().support_at(t) {
+                        Support::Single { swing, .. }
+                            if mpc_schedule_early_fz > 0.0 && obs.contact_fz[swing] > mpc_schedule_early_fz =>
+                        {
+                            Some(swing)
+                        }
+                        _ => None,
+                    };
                     (0..stair_wrench_horizon)
                         .map(|k| {
                             let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
                             match plan.gait().support_at(at) {
                                 Support::Double => [true, true],
+                                Support::Single { swing, .. }
+                                    if early_swing == Some(swing) && plan.gait().index_at(at) == i_now =>
+                                {
+                                    [true, true]
+                                }
                                 Support::Single { swing, .. } => [swing != 0, swing != 1],
                             }
                         })
@@ -3737,6 +3779,7 @@ pub(crate) fn phase_wbc(
     let slope_heel_cut = cfg.slope.heel_cut;
     let slope_heel_cut_max = cfg.slope.heel_cut_max;
     let mpc_sole_authority = cfg.mpc.sole_authority;
+    let mpc_auth_fz_ratio = cfg.mpc.auth_fz_ratio;
     let stair_wrench_blend = cfg.mpc.blend;
     let sole_half_l = k.sole_half_l;
     let robot = &k.robot;
@@ -3831,7 +3874,15 @@ pub(crate) fn phase_wbc(
             .wrench_mpc_command
             .as_ref()
             .filter(|_| wrench_mpc_apply && nc > 0)
-            .map(|wrench| MpcNominal { wrench, authority: mpc_sole_authority && nc == 2, blend: stair_wrench_blend }),
+            .map(|wrench| MpcNominal {
+                wrench,
+                authority: mpc_sole_authority
+                    && nc == 2
+                    && !ctl.mpc_auth_veto
+                    && (mpc_auth_fz_ratio <= 0.0
+                        || wrench[0][5] + wrench[1][5] <= mpc_auth_fz_ratio * k.total_mass * G),
+                blend: stair_wrench_blend,
+            }),
         swing: refs.swing.as_ref(),
         contact_fz: obs.contact_fz,
     };

@@ -310,6 +310,12 @@ impl Config {
                 apply: false,
                 coupled: true,
                 node_centre: false,
+                forecast_swing_only: false,
+                schedule_early_fz: 0.0,
+                cop_scale_x: 1.0,
+                auth_fz_ratio: 0.0,
+                auth_stair_off: false,
+                auth_tilt: 0.0,
                 net_cop_w: 0.0,
                 seed_previous: 0,
                 w_pos: 20.0,
@@ -1260,6 +1266,41 @@ pub struct WrenchMpcConfig {
     pub w_smooth: f64,
     /// `MPC_SOLE_AUTHORITY`.
     pub sole_authority: bool,
+    /// `MPC_FORECAST_SWING_ONLY`: place a foot at its forecast landing only
+    /// while the gait has it swinging. Off = any foot outside the measured
+    /// stance set goes to its forecast, so a scheduled-down foot that rocks
+    /// off its contact on an unmodelled bump is told to the MPC at its NEXT
+    /// landing (measured 2026-11-01: 4 cm ahead of the loaded foot, the MPC
+    /// asked for 1.9x the weight and the robot launched).
+    pub forecast_swing_only: bool,
+    /// `MPC_SCHEDULE_EARLY_FZ` [N]: when the swing foot already carries more
+    /// than this (an early touchdown), the rest of its swing slice is double
+    /// support in the MPC's contact schedule. 0 = off = the gait's schedule,
+    /// under which (measured 2026-11-01, kbump05 / kdesc r-0.020) the foot
+    /// that landed early may carry nothing and the stance sole is driven to
+    /// its box edge.
+    pub schedule_early_fz: f64,
+    /// `MPC_COP_SCALE_X`: the MPC's own fore/aft CoP box as a fraction of
+    /// the sole's (the WBC's box is unchanged; rolling strips unchanged).
+    /// 1 = the sole's = shipped. Measured 2026-11-01: under the sole
+    /// authority the MPC drove a stance sole resting on an unmodelled 5 mm
+    /// bump to its toe edge (+49 mm) where the real support ended at +8 mm.
+    pub cop_scale_x: f64,
+    /// `MPC_AUTH_FZ_RATIO`: withhold `MPC_SOLE_AUTHORITY` (fall back to the
+    /// blend) on a tick whose MPC command totals more vertical force than
+    /// this many body weights. 0 = off. Measured 2026-11-01: on a 5 mm bump
+    /// and the 20 mm step-down the stance sole tipped, its contact switched
+    /// to the rolling strip, the MPC asked for 1.9x the weight and the
+    /// authority handed it to the WBC (torque saturation, both feet off).
+    pub auth_fz_ratio: f64,
+    /// `MPC_AUTH_STAIR_OFF`: withhold `MPC_SOLE_AUTHORITY` in the stair zone
+    /// (the test of `MPC_FOOTSTEP_STAIR_OFF`). `MPC_AUTH_TILT` [rad]: withhold
+    /// it while a stance sole is tilted more than this from level (an
+    /// unmodelled bump under it). Read at each MPC solve. Off = false / 0.
+    /// Measured 2026-11-01: the authority is what wins the swing-side 0.9 N s
+    /// push (24 -> 43 of 48) and what loses the 20 mm step-down (24 -> 14).
+    pub auth_stair_off: bool,
+    pub auth_tilt: f64,
     /// `STAIR_WRENCH_DT`, `STAIR_WRENCH_PREVIEW_DT` [s] (at least the control
     /// period, at the use), `STAIR_WRENCH_N` (at least 2),
     /// `STAIR_WRENCH_LOW_MIN` (0..0.45), `STAIR_WRENCH_BLEND` (0..1).
