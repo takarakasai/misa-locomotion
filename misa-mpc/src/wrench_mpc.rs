@@ -640,7 +640,16 @@ pub fn lexicographic_cop_with_landing(
     for k in 0..n {
         let feet: Vec<usize> = (0..2).filter(|&f| input.contact_schedule[k][f]).collect();
         if feet.is_empty() {
-            polys.push(last_poly.clone().unwrap_or_default());
+            // a flight: no CoP to choose -- the pressure point is the one the
+            // caller states (for running, the coasting CoM's projection)
+            let p = pbar.get(k).copied().unwrap_or(last_centre);
+            let e = 1e-4;
+            polys.push(vec![
+                (na::Vector2::new(1.0, 0.0), p.x + e),
+                (na::Vector2::new(-1.0, 0.0), -p.x + e),
+                (na::Vector2::new(0.0, 1.0), p.y + e),
+                (na::Vector2::new(0.0, -1.0), -p.y + e),
+            ]);
             continue;
         }
         let corners = |f: usize| -> [na::Vector2<f64>; 4] {

@@ -257,6 +257,31 @@ pub(crate) fn phase_landing_clock(
     // does in hardware (Kim et al. 2019, arXiv:1901.08100: contact switches
     // "terminate swing foot motion controls when the swing foot touches the
     // ground earlier than anticipated").
+    // ---- running: touchdown events end (or hold open) a flight --------
+    if cfg.swing.run_event_td {
+        let i = plan.gait().index_at(t);
+        let sl = plan.gait().slices[i];
+        if let Support::Flight { next } = sl.support {
+            let load = cfg.swing.run_td_load * k.robot.total_mass * G;
+            let fz = obs.contact_fz;
+            if fz[next] > load && t > sl.t0 + k.dt {
+                // early: the flight is over now
+                let mut ed = plan.edit(Writer::ContactEvent);
+                ed.retime(i, t);
+                ed.commit();
+            } else if fz[next] <= load && t + k.dt >= sl.t1 && t < sl.t0 + sl.duration().max(0.0) + cfg.swing.run_td_wait {
+                // late: keep the flight open one more tick (bounded by the
+                // original end + RUN_TD_WAIT, tracked from the slice start)
+                let orig_end = ctl.run_flight_end.filter(|(j, _)| *j == i).map_or(sl.t1, |(_, e)| e);
+                ctl.run_flight_end = Some((i, orig_end));
+                if t + k.dt < orig_end + cfg.swing.run_td_wait {
+                    let mut ed = plan.edit(Writer::ContactEvent);
+                    ed.retime(i, t + 2.0 * k.dt);
+                    ed.commit();
+                }
+            }
+        }
+    }
     let com_replan = cfg.com_plan.replan;
     let contact_admit_confirmed = cfg.contact.admit_confirmed;
     // A landing that ends by the extension TIMEOUT counts too when the sole
@@ -2597,7 +2622,7 @@ pub(crate) fn phase_wrench_mpc(
                 target_velocity,
                 target_acceleration: a_com,
                 com_z_max: None,
-                reference_trajectory,
+                reference_trajectory: reference_trajectory.clone(),
                 contacts: [contacts[0].clone(), contacts[1].clone()],
                 // Walking branch: the contact SET over the horizon comes
                 // from the gait, node by node (lift-off and landing inside
@@ -3896,7 +3921,8 @@ pub(crate) fn phase_task_refs(
                 swing_tgt = tgt;
                 swing_cmd_acc_z = kp_sw_z * (tgt.z - pos.z) + kd_sw * (tgt_v.z - vel.z);
             }
-            built.push(SwingRef { jf, djv, pos, vel, tgt, tgt_v, kp_xy: kp_sw_xy, kp_z: kp_sw_z, kd: kd_sw, axes, rot, acc: None });
+            let soft = if frac > 1.0 - cfg.swing.run_land_frac { cfg.swing.run_land_kp } else { 1.0 };
+            built.push(SwingRef { jf, djv, pos, vel, tgt, tgt_v, kp_xy: kp_sw_xy, kp_z: kp_sw_z * soft, kd: kd_sw * soft.sqrt(), axes, rot, acc: None });
         }
         let mut it = built.into_iter();
         swing = it.next();

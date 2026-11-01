@@ -91,6 +91,9 @@ pub(crate) struct CtlState {
     pub edge: [Option<EdgeState>; 2],
     /// Running: the CoM velocity filtered for the foothold correction.
     pub run_vel_ema: Option<na::Vector2<f64>>,
+    /// Running: (flight slice, its original end) while a late touchdown
+    /// holds it open.
+    pub run_flight_end: Option<(usize, f64)>,
     /// Load-change rate per foot (the managed-contact trigger).
     pub fz_prev: [f64; 2],
     pub fz_rate_ema: [f64; 2],
@@ -1033,6 +1036,7 @@ impl WalkerInit {
             run_lift_off: [None, None],
             edge: [None, None],
             run_vel_ema: None,
+            run_flight_end: None,
             fz_prev: [0.0; 2],
             fz_rate_ema: [0.0; 2],
             managed_until: [f64::NEG_INFINITY; 2],

@@ -170,6 +170,11 @@ impl Config {
                 run_rise: 0.0,
                 run_fall: 0.0,
                 run_land_ramp: 0.0,
+                run_event_td: false,
+                run_td_load: 0.1,
+                run_td_wait: 0.03,
+                run_land_kp: 1.0,
+                run_land_frac: 0.2,
                 run_foot_k: 0.0,
                 run_foot_kx: None,
                 run_foot_tau: 0.4,
@@ -963,6 +968,16 @@ pub struct SwingConfig {
     /// k·(v - v_cmd) (Raibert / running capture point, k ~ sqrt(h/g)), with
     /// v the CoM velocity filtered over `RUN_FOOT_TAU` [s], capped at
     /// `RUN_FOOT_MAX` [m].
+    /// `RUN_EVENT_TD`: running, end a flight at the next foot's measured
+    /// touchdown (`RUN_TD_LOAD` x body weight) and hold it open up to
+    /// `RUN_TD_WAIT` [s] for a late one. `RUN_LAND_KP`: the swing's
+    /// vertical gains are scaled by this over the last `RUN_LAND_FRAC` of
+    /// the swing (a softer leg meeting the ground).
+    pub run_event_td: bool,
+    pub run_td_load: f64,
+    pub run_td_wait: f64,
+    pub run_land_kp: f64,
+    pub run_land_frac: f64,
     pub run_foot_k: f64,
     /// `RUN_FOOT_KX`: the sagittal gain if different (None = `RUN_FOOT_K`);
     /// `RUN_FOOT_K` is then the lateral one.
