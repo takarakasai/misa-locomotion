@@ -63,6 +63,13 @@ fn kyo46rs_v3_is_its_controls() {
 }
 
 #[test]
+fn kyo46rs_v4_is_its_controls() {
+    let c = from_file(&profile::by_name(""), "kyo46rs_v4.json");
+    assert_eq!(c, Config::kyo46rs_v4());
+    assert_ne!(c, Config::kyo46rs_v3());
+}
+
+#[test]
 fn no_keys_is_the_code_defaults() {
     for prof in [profile::KYO46RS, profile::G1_23DOF] {
         assert_eq!(config_env::config_from_kv(&prof, &|_| None), Config::code_defaults(&prof));
@@ -93,11 +100,14 @@ fn walker_preset_is_the_base() {
     assert_eq!(config_env::config_from_kv(&profile::by_name(""), &|k| kv.get(k).cloned()), Config::kyo46rs_v2());
     let kv = one("kyo46rs_v3");
     assert_eq!(config_env::config_from_kv(&profile::by_name(""), &|k| kv.get(k).cloned()), Config::kyo46rs_v3());
+    let kv = one("kyo46rs_v4");
+    assert_eq!(config_env::config_from_kv(&profile::by_name(""), &|k| kv.get(k).cloned()), Config::kyo46rs_v4());
     // Under its own controls the preset is unchanged (every key restates it).
     for (prof, rel, preset, want) in [
         (profile::G1_23DOF, "g1_v619.json", "g1_v619", Config::g1_v619()),
         (profile::by_name(""), "kyo46rs_v2.json", "kyo46rs_v2", Config::kyo46rs_v2()),
         (profile::by_name(""), "kyo46rs_v3.json", "kyo46rs_v3", Config::kyo46rs_v3()),
+        (profile::by_name(""), "kyo46rs_v4.json", "kyo46rs_v4", Config::kyo46rs_v4()),
     ] {
         let mut kv = flat_json(rel);
         kv.insert("WALKER_PRESET".into(), preset.into());

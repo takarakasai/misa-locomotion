@@ -591,6 +591,53 @@ impl Config {
         c
     }
 
+    /// kyo46rs base v4 (2026-11-01, doc/from_claude/20261031_kyo46rs_push_recovery.md
+    /// §13, candidate kl9): [`Config::kyo46rs_v3`] with the push recovery of
+    /// §5-§10 (the wrench MPC applied, its footstep variables off the stair
+    /// zone, PUSH_REPLAN with its trigger low-passed) and the CoP leash of
+    /// §13. Checked against articara's controls by tests/presets.rs.
+    pub fn kyo46rs_v4() -> Self {
+        let mut c = Self::kyo46rs_v3();
+        // The wrench MPC, applied (G1's nine keys).
+        c.mpc.enabled = true;
+        c.mpc.always = true;
+        c.mpc.apply = true;
+        c.mpc.coupled = false;
+        c.mpc.node_centre = true;
+        c.mpc.net_cop_w = 10.0;
+        c.mpc.seed_previous = 2;
+        c.mpc.w_smooth = 10.0;
+        c.mpc.sole_authority = true;
+        // Its footstep variables at half G1's reach, no inward step, off the
+        // stair zone.
+        c.mpc_footstep.on = true;
+        c.mpc_footstep.w = 100.0;
+        c.mpc_footstep.trig = 0.0075;
+        c.mpc_footstep.max = [0.075, 0.04];
+        c.mpc_footstep.max_y_in = 0.0;
+        c.mpc_footstep.y_in_fwd = 0.0;
+        c.mpc_footstep.capture_w = 1e6;
+        c.mpc_footstep.capture_j = true;
+        c.mpc_footstep.lex = true;
+        c.mpc_footstep.stair_off = true;
+        // PUSH_REPLAN in every direction, no stand, no ramp; the push
+        // trigger low-passed at 5 Hz.
+        c.push_replan.trig = 0.03;
+        c.push_replan.max_fwd = 0.15;
+        c.push_replan.max_back = 0.15;
+        c.push_replan.min_w = 0.06;
+        c.push_replan.max_w = 0.20;
+        c.push_replan.hold = 10.0;
+        c.push_replan.stand = 0;
+        c.push_replan.ramp = 0;
+        c.dcm.trig_lpf_hz = 5.0;
+        // The CoP leash: 5 mm, tilted soles only, on the MPC's box too.
+        c.contact.cop_leash = 0.005;
+        c.contact.cop_leash_tilt = 0.02;
+        c.contact.cop_leash_mpc = true;
+        c
+    }
+
     /// The landing clock with its knobs set: the confirmation's force gate
     /// (`LAND_CONFIRM_FZ_FRAC` of m g) and tolerances, the deadline slack and
     /// arrival speeds, the event-driven contact, and the descent's z

@@ -53,8 +53,8 @@ pub fn profile_from_kv(mut prof: Profile, get: &dyn Fn(&str) -> Option<String>) 
 }
 
 /// The Config a run starts from (S17): `WALKER_PRESET=g1_v619`, `kyo46rs_v2`
-/// or `kyo46rs_v3` names a preset ([`Config::g1_v619`], [`Config::kyo46rs_v2`],
-/// [`Config::kyo46rs_v3`]),
+/// `kyo46rs_v3` or `kyo46rs_v4` names a preset ([`Config::g1_v619`], [`Config::kyo46rs_v2`],
+/// [`Config::kyo46rs_v3`], [`Config::kyo46rs_v4`]),
 /// unset is [`Config::code_defaults`] of the robot. A preset is made for one
 /// robot; naming it for another panics (its profile-derived values would be
 /// the wrong robot's).
@@ -73,7 +73,11 @@ pub fn base_config(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> Conf
             assert_eq!(prof.name, crate::profile::KYO46RS.name, "WALKER_PRESET=kyo46rs_v3 is the kyo46rs preset (ROBOT unset or kyo46rs)");
             Config::kyo46rs_v3()
         }
-        Some(other) => panic!("unknown WALKER_PRESET={other:?} (g1_v619 | kyo46rs_v2 | kyo46rs_v3)"),
+        Some("kyo46rs_v4") => {
+            assert_eq!(prof.name, crate::profile::KYO46RS.name, "WALKER_PRESET=kyo46rs_v4 is the kyo46rs preset (ROBOT unset or kyo46rs)");
+            Config::kyo46rs_v4()
+        }
+        Some(other) => panic!("unknown WALKER_PRESET={other:?} (g1_v619 | kyo46rs_v2 | kyo46rs_v3 | kyo46rs_v4)"),
     }
 }
 
