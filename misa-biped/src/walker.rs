@@ -93,6 +93,8 @@ pub(crate) struct CtlState {
     pub edge: [Option<EdgeState>; 2],
     /// Running: the CoM velocity filtered for the foothold correction.
     pub run_vel_ema: Option<na::Vector2<f64>>,
+    /// `DCM_KI`: the integral term of the commanded ZMP [m] (world x, y).
+    pub dcm_int: na::Vector2<f64>,
     /// Running: (flight slice, its original end) while a late touchdown
     /// holds it open.
     pub run_flight_end: Option<(usize, f64)>,
@@ -1047,6 +1049,7 @@ impl WalkerInit {
             run_lift_off: [None, None],
             edge: [None, None],
             run_vel_ema: None,
+            dcm_int: na::Vector2::zeros(),
             run_flight_end: None,
             mpc_fs2_slice: None,
             mpc_fs2_applied: na::Vector2::zeros(),

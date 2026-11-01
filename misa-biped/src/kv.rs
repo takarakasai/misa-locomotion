@@ -193,6 +193,8 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
         DcmConfig {
             cop_frac: num("COP_FRAC", d.cop_frac),
             k_dcm: num("K_DCM", d.k_dcm),
+            ki_dcm: num("DCM_KI", d.ki_dcm),
+            ki_dcm_max: num("DCM_KI_MAX", d.ki_dcm_max),
             vh_dcm: flag("VH_DCM", d.vh_dcm),
             zmp_margin: num("ZMP_MARGIN", d.zmp_margin),
             clamp_zmp: flag("CLAMP_ZMP", d.clamp_zmp),

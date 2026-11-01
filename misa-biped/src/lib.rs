@@ -22,6 +22,8 @@
 //! - [`robot`]        -- the rigid-body model the walker computes with, the
 //!   state it assembles from an estimate (M, h, FK, CoM Jacobian), and the
 //!   per-tick observation.
+//! - [`odometry`]     -- leg odometry: base position / velocity from the IMU and
+//!   the stance feet's kinematics (linear Kalman filter)
 //! - [`estimator`]    -- sensor reading -> state estimate (velocity fusion with
 //!   an accelerometer, low-pass filters, the joint-rate clamp).
 //! - [`command`]      -- what is commanded when the WBC degrades (the policy,
@@ -57,6 +59,7 @@ pub mod tasks;
 pub mod task_stack;
 pub mod sink;
 pub mod estimator;
+pub mod odometry;
 pub mod command;
 pub mod walker;
 

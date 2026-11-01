@@ -1719,7 +1719,14 @@ pub(crate) fn phase_cmd_zmp(
     let contact_plan_cfg = k.contact_plan_cfg;
     let (support, steps) = (sup.support, &sup.steps);
     let (xi, r, dcm_err) = (dcm.xi, &dcm.r, dcm.dcm_err);
-    let p_raw = commanded_zmp(&xi, &r, omega, k_dcm);
+    let mut p_raw = commanded_zmp(&xi, &r, omega, k_dcm);
+    if cfg.dcm.ki_dcm > 0.0 {
+        // DCM_KI: integrate, bounded (no wind-up past the bound)
+        let lim = cfg.dcm.ki_dcm_max;
+        let di = (xi - r.xi) * (cfg.dcm.ki_dcm * dt);
+        ctl.dcm_int = (ctl.dcm_int + di).map(|v| v.clamp(-lim, lim));
+        p_raw += ctl.dcm_int;
+    }
     // Clamp against the support that is REALLY there, which in NO_LIFT is
     // both feet even where the plan says one.
     let sbox = SupportBox::from_stance_yawed(

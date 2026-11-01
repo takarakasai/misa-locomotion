@@ -109,6 +109,8 @@ impl Config {
             dcm: DcmConfig {
                 cop_frac: 1.0,
                 k_dcm: 2.0,
+                ki_dcm: 0.0,
+                ki_dcm_max: 0.02,
                 vh_dcm: false,
                 zmp_margin: 0.8,
                 clamp_zmp: true,
@@ -870,6 +872,13 @@ pub struct DcmConfig {
     pub cop_frac: f64,
     /// `K_DCM`.
     pub k_dcm: f64,
+    /// `DCM_KI` [1/s]: integral of the DCM error added to the commanded ZMP
+    /// (0 = off), and `DCM_KI_MAX` [m], the bound on that term. A constant
+    /// offset between the estimated and the real CoM (an IMU tilt bias, a
+    /// mass error) otherwise leaves a steady DCM error the proportional law
+    /// only halves.
+    pub ki_dcm: f64,
+    pub ki_dcm_max: f64,
     /// `VH_DCM`: the height-varying DCM law on a modelled terrain.
     pub vh_dcm: bool,
     /// `ZMP_MARGIN`, `CLAMP_ZMP`: keep the commanded ZMP inside the support
