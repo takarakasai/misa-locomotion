@@ -538,6 +538,10 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
             capture_w: num("MPC_LANDING_CAPTURE_W", d.capture_w).max(0.0),
             capture_j: flag("MPC_LANDING_CAPTURE_J", d.capture_j),
             lex: flag("MPC_LANDING_LEX", d.lex),
+            two_step: flag("MPC_FOOTSTEP2", d.two_step),
+            two_step_y_in: num("MPC_FOOTSTEP2_Y_IN", d.two_step_y_in).max(0.0),
+            two_step_extra: num("MPC_FOOTSTEP2_N", d.two_step_extra as f64).max(0.0) as usize,
+            two_step_scale: num("MPC_FOOTSTEP2_SCALE", d.two_step_scale).max(0.0),
         }
     };
 

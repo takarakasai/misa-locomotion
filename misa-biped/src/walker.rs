@@ -94,6 +94,9 @@ pub(crate) struct CtlState {
     /// Running: (flight slice, its original end) while a late touchdown
     /// holds it open.
     pub run_flight_end: Option<(usize, f64)>,
+    /// Two-step recovery: the second landing's slice and the offset applied.
+    pub mpc_fs2_slice: Option<usize>,
+    pub mpc_fs2_applied: na::Vector2<f64>,
     /// Load-change rate per foot (the managed-contact trigger).
     pub fz_prev: [f64; 2],
     pub fz_rate_ema: [f64; 2],
@@ -1037,6 +1040,8 @@ impl WalkerInit {
             edge: [None, None],
             run_vel_ema: None,
             run_flight_end: None,
+            mpc_fs2_slice: None,
+            mpc_fs2_applied: na::Vector2::zeros(),
             fz_prev: [0.0; 2],
             fz_rate_ema: [0.0; 2],
             managed_until: [f64::NEG_INFINITY; 2],

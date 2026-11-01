@@ -2182,6 +2182,9 @@ pub(crate) fn phase_wrench_mpc(
     let mpc_footstep_y_in_fwd = cfg.mpc_footstep.y_in_fwd;
     let mpc_footstep_y_in_fwd_trig = cfg.mpc_footstep.y_in_fwd_trig;
     let mpc_footstep = cfg.mpc_footstep.on;
+    let two_step = cfg.mpc_footstep.two_step && plan.gait().slices.iter().any(|s| s.support.is_flight());
+    // the capture rows (only) look this far, so the second landing is inside
+    let n_cap = if two_step { cfg.mpc.horizon + cfg.mpc_footstep.two_step_extra } else { cfg.mpc.horizon };
     // Arm the landing variable only once the DCM error of this single
     // support reaches this value [m] (latched for the rest of the step), the
     // rule the contact_plan adjuster uses (CP_TRIG): an undisturbed step
@@ -2515,6 +2518,39 @@ pub(crate) fn phase_wrench_mpc(
                         foot: swing,
                         first_node,
                         min_first_node: first_node,
+                        // two-step recovery (running): the other foot's next
+                        // touchdown, from the node it is down again
+                        second: if two_step {
+                            let other = 1 - swing;
+                            let mut seen_off = false;
+                            (0..n_cap)
+                                .find(|&k| {
+                                    let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
+                                    let on = plan.gait().support_at(at).is_stance(other);
+                                    if !on {
+                                        seen_off = true;
+                                    }
+                                    seen_off && on
+                                })
+                                .map(|k2| {
+                                    let (out_y, in_y) = (mpc_footstep_max[1], cfg.mpc_footstep.two_step_y_in);
+                                    // left foot: outward is +y
+                                    let (max_y, min_y) = if other == 0 { (out_y, in_y) } else { (in_y, out_y) };
+                                    // what this slice's second landing already moved
+                                    let j2 = (plan.gait().index_at(t) + 1..plan.gait().slices.len())
+                                        .find(|&j| plan.gait().slices[j].support.swing() == Some(other));
+                                    let _ = j2;
+                                    let prior = na::Vector2::<f64>::zeros();
+                                    misa_mpc::wrench_mpc::SecondLanding {
+                                        first_node: k2,
+                                        max: [mpc_footstep_max[0], max_y],
+                                        min: [mpc_footstep_max[0], min_y],
+                                        prior: [prior.x, prior.y],
+                                    }
+                                })
+                        } else {
+                            None
+                        },
                         position: [contacts[swing].position.x, contacts[swing].position.y],
                         // MPC_FOOTSTEP_TERRAIN_W (terrain as a cost) removed.
                         terrain_x: None,
@@ -2671,7 +2707,7 @@ pub(crate) fn phase_wrench_mpc(
                 // removed; it added an exact zero when off.)
                 reference_net_cop_schedule: (mpc_net_cop_weight > 0.0)
                     .then(|| {
-                    (0..stair_wrench_horizon)
+                    (0..n_cap)
                         .map(|k| {
                             let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
                             plan.dcm().reference(at).p
@@ -2680,7 +2716,7 @@ pub(crate) fn phase_wrench_mpc(
                 }),
                 reference_dcm_schedule: (mpc_landing_capture_w > 0.0)
                     .then(|| {
-                    (0..stair_wrench_horizon)
+                    (0..n_cap)
                         .map(|k| {
                             let at = t + (k as f64 + 0.5) * stair_wrench_preview_dt;
                             plan.dcm().reference(at).xi
@@ -2750,6 +2786,7 @@ pub(crate) fn phase_wrench_mpc(
                 wrench_weight: mpc_w_wrench,
                 omega,
                 landing_capture_weight: mpc_landing_capture_w,
+                landing_capture_horizon: n_cap,
                 landing_lexicographic: mpc_landing_lex,
                 landing_moment_coupling: mpc_footstep_moment,
                 smooth_weight: mpc_w_smooth,
@@ -2838,6 +2875,30 @@ pub(crate) fn phase_wrench_mpc(
                             ed.commit();
                             stats.n_replan += 1;
                             if debug.replan { outln!(out, "  [diag-replan] site 6 t={t:.3} (line 9380)"); }
+                        }
+                    }
+                    // two-step recovery: move the other foot's next landing
+                    if let Some(dp2) = solution.landing2_shift.map(|d| d * cfg.mpc_footstep.two_step_scale)
+                        && let Some(land) = landing
+                    {
+                        let i = plan.gait().index_at(t);
+                        let other = 1 - land.foot;
+                        if let Some(j2) = (i + 1..plan.gait().slices.len())
+                            .find(|&j| plan.gait().slices[j].support.swing() == Some(other))
+                        {
+                            if ctl.mpc_fs2_slice != Some(j2) {
+                                ctl.mpc_fs2_slice = Some(j2);
+                                ctl.mpc_fs2_applied = na::Vector2::zeros();
+                            }
+                            // dp2 is the total since this second landing was
+                            // first asked for (as the first landing's dp)
+                            let d2 = dp2 - ctl.mpc_fs2_applied;
+                            if d2.norm() > 1e-6 {
+                                let mut ed = plan.edit(Writer::MpcLanding);
+                                ed.shift_next(j2, other, d2);
+                                ctl.mpc_fs2_applied = dp2;
+                                ed.commit();
+                            }
                         }
                     }
                     if debug.mpc_traj && t < 2.0 {

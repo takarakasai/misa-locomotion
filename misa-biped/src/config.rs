@@ -358,6 +358,10 @@ impl Config {
                 capture_w: 0.0,
                 capture_j: false,
                 lex: false,
+                two_step: false,
+                two_step_y_in: 0.0,
+                two_step_extra: 8,
+                two_step_scale: 1.0,
             },
             mpc_cross: MpcCrossConfig { y: 0.0, ex: 0.02, floor: 0.0, hold_z: 0.0, hold_xy: 0.02 },
             push_replan: PushReplanConfig {
@@ -1358,6 +1362,17 @@ pub struct MpcFootstepConfig {
     pub capture_w: f64,
     pub capture_j: bool,
     pub lex: bool,
+    /// `MPC_FOOTSTEP2`: running, two-step recovery -- the MPC also moves the
+    /// OTHER foot's next landing (inside `max`, `MPC_FOOTSTEP2_Y_IN` inward)
+    /// for what the first landing's box cannot capture.
+    pub two_step: bool,
+    pub two_step_y_in: f64,
+    /// `MPC_FOOTSTEP2_N`: extra nodes of the capture rows (only) beyond
+    /// the MPC's horizon, so the second landing falls inside them.
+    pub two_step_extra: usize,
+    /// `MPC_FOOTSTEP2_SCALE`: fraction of the second landing's offset
+    /// applied to the plan (1 = all, 0 = decided but not applied).
+    pub two_step_scale: f64,
 }
 
 /// The MPC landing crossing the stance foot.
