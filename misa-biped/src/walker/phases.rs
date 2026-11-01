@@ -644,6 +644,12 @@ pub(crate) fn phase_support(
     // anchor. Doing it on the schedule (rather than lazily, the way
     // standing did with get_or_insert) is what makes a foot that has been
     // somewhere else since stop arguing for where it used to be.
+    // running foothold correction: the CoM velocity filtered over a stride
+    if cfg.swing.run_foot_k != 0.0 || cfg.swing.run_foot_kx.is_some_and(|k| k != 0.0) {
+        let v = obs_state(obs).com_vel.xy();
+        let a = (k.dt / cfg.swing.run_foot_tau).min(1.0);
+        ctl.run_vel_ema = Some(ctl.run_vel_ema.map_or(v, |e| e + (v - e) * a));
+    }
     // ---- heel strike / toe-off (HEEL_TOE, walking) --------------------
     let heel_toe = cfg.swing.heel_toe && !plan.gait().slices.iter().any(|s| s.support.is_flight());
     if heel_toe {
@@ -1037,7 +1043,22 @@ pub(crate) fn phase_contacts(
     // (LOAD_RAMP_TD, keeping the share the landed foot already carries,
     // and LOAD_RAMP_CONTACT_T, ramping from the contact-entry tick too,
     // were not adopted and are removed.)
-    let ramp = LoadRamp { landing, lifting, slice_frac, ramp_frac, foot_mi: robot.foot_mi };
+    let mut ramp = LoadRamp { landing, lifting, slice_frac, ramp_frac, foot_mi: robot.foot_mi };
+    // running: the foot landing from a flight takes its load on gradually
+    if cfg.swing.run_land_ramp > 0.0 && let Support::Single { stance, .. } = support {
+        let i = plan.gait().index_at(t);
+        if i > 0 && plan.gait().slices[i - 1].support.is_flight() {
+            let sl = &plan.gait().slices[i];
+            let ts = sl.duration().max(1e-3);
+            ramp = LoadRamp {
+                landing: Some(stance),
+                lifting: None,
+                slice_frac: ((t - sl.t0) / ts).clamp(0.0, 1.0),
+                ramp_frac: (cfg.swing.run_land_ramp / ts).max(1e-3),
+                foot_mi: robot.foot_mi,
+            };
+        }
+    }
     ContactsOut { fz_meas, stance_sides, stance, nc, ramp }
 }
 
@@ -3792,6 +3813,25 @@ pub(crate) fn phase_task_refs(
     let running = plan.gait().slices.iter().any(|s| s.support.is_flight());
     let mut swing = swing;
     let mut swing2: Option<SwingRef> = None;
+    // Raibert / running capture point: the touchdown moves by k(v - v_cmd)
+    let mut run_foot_dv: Option<na::Vector2<f64>> = None;
+    if running && (cfg.swing.run_foot_k != 0.0 || cfg.swing.run_foot_kx.is_some_and(|k| k != 0.0)) {
+        let ema = ctl.run_vel_ema.unwrap_or_else(|| obs_state(obs).com_vel.xy());
+        let yaw = 0.5 * (sup.steps.yaw[0] + sup.steps.yaw[1]);
+        let v_cmd = na::Vector2::new(yaw.cos(), yaw.sin()) * k.vx;
+        // heading frame: sagittal and lateral gains
+        let (c_, s_) = (yaw.cos(), yaw.sin());
+        let e = ema - v_cmd;
+        let (ex, ey) = (c_ * e.x + s_ * e.y, -s_ * e.x + c_ * e.y);
+        let kx = cfg.swing.run_foot_kx.unwrap_or(cfg.swing.run_foot_k);
+        let (dx, dy) = (kx * ex, cfg.swing.run_foot_k * ey);
+        let mut dv = na::Vector2::new(c_ * dx - s_ * dy, s_ * dx + c_ * dy);
+        let m = cfg.swing.run_foot_max;
+        if dv.norm() > m {
+            dv *= m / dv.norm();
+        }
+        run_foot_dv = Some(dv);
+    }
     if running {
         let slices = &plan.gait().slices;
         let mut built: Vec<SwingRef> = Vec::new();
@@ -3811,7 +3851,11 @@ pub(crate) fn phase_task_refs(
             let dur = (t_td - t_lo).max(1e-3);
             let frac = ((t - t_lo) / dur).clamp(0.0, 1.0);
             let plan_xy = plan.footsteps().at_slice(j).sole[side];
-            let td = na::Vector3::new(plan_xy.x, plan_xy.y, lo.z);
+            let mut td = na::Vector3::new(plan_xy.x, plan_xy.y, lo.z);
+            if let Some(dv) = run_foot_dv {
+                td.x += dv.x;
+                td.y += dv.y;
+            }
             let mut tgt = crate::gait::swing_position(lo, td, lift_h, frac);
             let mut tgt_v = crate::gait::swing_velocity(lo, td, lift_h, frac, dur);
             if run_rise > 0.0 && run_fall > 0.0 {

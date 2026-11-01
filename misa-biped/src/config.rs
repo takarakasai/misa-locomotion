@@ -169,6 +169,11 @@ impl Config {
                 run_bulge: 0.0,
                 run_rise: 0.0,
                 run_fall: 0.0,
+                run_land_ramp: 0.0,
+                run_foot_k: 0.0,
+                run_foot_kx: None,
+                run_foot_tau: 0.4,
+                run_foot_max: 0.08,
                 heel_toe: false,
                 heel_strike_deg: 6.0,
                 toe_off_deg: 12.0,
@@ -950,6 +955,20 @@ pub struct SwingConfig {
     /// flight -- the foot drags and the flight disappears.
     pub run_rise: f64,
     pub run_fall: f64,
+    /// `RUN_LAND_RAMP` [s]: running only, the landing foot's force ceiling
+    /// rises from ~0 to full over this long after a flight (impact
+    /// absorption: the CoM sinks into the stance instead of a step force).
+    pub run_land_ramp: f64,
+    /// `RUN_FOOT_K` [s]: running only, the touchdown target moves by
+    /// k·(v - v_cmd) (Raibert / running capture point, k ~ sqrt(h/g)), with
+    /// v the CoM velocity filtered over `RUN_FOOT_TAU` [s], capped at
+    /// `RUN_FOOT_MAX` [m].
+    pub run_foot_k: f64,
+    /// `RUN_FOOT_KX`: the sagittal gain if different (None = `RUN_FOOT_K`);
+    /// `RUN_FOOT_K` is then the lateral one.
+    pub run_foot_kx: Option<f64>,
+    pub run_foot_tau: f64,
+    pub run_foot_max: f64,
     /// `HEEL_TOE`: walking with heel strike and toe-off -- the landing
     /// foot comes down toe-up (`HEEL_STRIKE_DEG`) on its heel edge and rolls
     /// flat over `HEEL_ROLL_TIME` [s]; the rear foot rolls onto its toe edge

@@ -89,6 +89,8 @@ pub(crate) struct CtlState {
     pub run_lift_off: [Option<(na::Vector3<f64>, f64)>; 2],
     /// Heel strike / toe-off: the edge each foot is rolling on, if any.
     pub edge: [Option<EdgeState>; 2],
+    /// Running: the CoM velocity filtered for the foothold correction.
+    pub run_vel_ema: Option<na::Vector2<f64>>,
     /// Load-change rate per foot (the managed-contact trigger).
     pub fz_prev: [f64; 2],
     pub fz_rate_ema: [f64; 2],
@@ -1030,6 +1032,7 @@ impl WalkerInit {
             swing_lift_off: None,
             run_lift_off: [None, None],
             edge: [None, None],
+            run_vel_ema: None,
             fz_prev: [0.0; 2],
             fz_rate_ema: [0.0; 2],
             managed_until: [f64::NEG_INFINITY; 2],
