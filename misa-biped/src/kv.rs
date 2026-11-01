@@ -348,6 +348,10 @@ pub fn config_from_kv(prof: &Profile, get: &dyn Fn(&str) -> Option<String>) -> C
                 let mut it = v.split(',').map(|x| x.trim().parse::<f64>().ok());
                 Some((it.next()??.max(0.0), it.next()??.max(0.0)))
             }).or(d.admit_loaded),
+            cop_leash: num("COP_LEASH", d.cop_leash).max(0.0),
+            cop_leash_tilt: num("COP_LEASH_TILT", d.cop_leash_tilt).max(0.0),
+            cop_leash_fz: num("COP_LEASH_FZ", d.cop_leash_fz).max(0.0),
+            cop_leash_mpc: flag("COP_LEASH_MPC", d.cop_leash_mpc),
         }
     };
 

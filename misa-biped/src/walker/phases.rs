@@ -138,6 +138,8 @@ pub(crate) struct TickObs<'a> {
     pub tick: usize,
     pub state: &'a RobotState,
     pub contact_fz: [f64; 2],
+    /// `Observation::sole_cop`.
+    pub sole_cop: [Option<[f64; 2]>; 2],
     /// The joint angles the posture and arm-hold levels read (harness
     /// order): the plant's `Observation::joint_pos_plant` (LEAK), or the
     /// estimate's `joint_q` under `JOINT_Q_EST`.
@@ -147,6 +149,57 @@ pub(crate) struct TickObs<'a> {
 /// The tick's assembled state.
 pub(crate) fn obs_state<'a>(obs: &TickObs<'a>) -> &'a RobotState {
     obs.state
+}
+
+/// `COP_LEASH`: the CoP box of foot `side`, cut to within the leash of the
+/// CoP its sole measures, as (centre from the sole centre, half-extents) in
+/// the sole frame; None when the leash is off or does not apply (no
+/// reading, too little load, a level sole under `COP_LEASH_TILT`, or not
+/// in single support -- the seesaw is the lone stance foot's, and in double
+/// support the spawn drop rocks both soles on their corners -- or in the
+/// stair zone, where the planner knows the edge and the descent rolls the
+/// stance foot over the nosing on purpose: leashed, the 20 mm descent fell
+/// 14 -> 4 of 48). `full` is the uncut half box.
+pub(crate) fn cop_leash_box(
+    cfg: &Config,
+    k: &WalkerConsts,
+    obs: &TickObs,
+    sup: &SupportOut,
+    side: usize,
+    full: (f64, f64),
+) -> Option<([f64; 2], (f64, f64))> {
+    let c = &cfg.contact;
+    if c.cop_leash <= 0.0
+        || !matches!(sup.support, Support::Single { stance, .. } if stance == side)
+        || obs.contact_fz[side] < c.cop_leash_fz * k.total_mass * G
+    {
+        return None;
+    }
+    let in_stairs = k.stairs.as_ref().is_some_and(|st| {
+        (st.riser.abs() > 1e-6 || st.down_n > 0)
+            && crate::height::stair_zone_crouch(sup.steps.mid_xy().x, st, cfg.stair_zone.lead, cfg.stair_zone.tail, 1.0)
+                > 0.0
+    });
+    if in_stairs {
+        return None;
+    }
+    let m = obs.sole_cop[side]?;
+    if c.cop_leash_tilt > 0.0 {
+        let r = misarta::se3::rotation_matrix(&obs_state(obs).data.oMi[k.robot.foot_mi[side]]);
+        if r[(2, 2)].clamp(-1.0, 1.0).acos() < c.cop_leash_tilt {
+            return None;
+        }
+    }
+    let cut = |m: f64, h: f64| {
+        let m = m.clamp(-h, h);
+        let (lo, hi) = ((m - c.cop_leash).max(-h), (m + c.cop_leash).min(h));
+        (0.5 * (lo + hi), (0.5 * (hi - lo)).max(0.002))
+    };
+    // Fore/aft only: the seesaw is about the pitch axis (the bumps run the
+    // full width), and a lateral leash pinned the box to a corner on the
+    // spawn drop (fell at 0.5 s, 2026-11-01).
+    let (cx, hx) = cut(m[0], full.0);
+    Some(([cx, 0.0], (hx, full.1)))
 }
 
 /// Phase 1: the landing detector's tolerances and extension for the slice
@@ -2274,7 +2327,14 @@ pub(crate) fn phase_wrench_mpc(
                 let rotation = misarta::se3::rotation_matrix(&data.oMi[robot.foot_mi[side]]);
                 let s_pitch = -rotation[(2, 0)];
                 let rolling = stair_hybrid_contact && s_pitch.abs() >= 0.087;
-                let cop_half = if rolling {
+                let leash = if cfg.contact.cop_leash_mpc && !rolling {
+                    cop_leash_box(cfg, k, obs, sup, side, contact_cfg.cop_half)
+                } else {
+                    None
+                };
+                let cop_half = if let Some((_, h)) = leash {
+                    h
+                } else if rolling {
                     (0.006, contact_cfg.cop_half.1)
                 } else if mpc_cop_scale_x < 1.0 {
                     (contact_cfg.cop_half.0 * mpc_cop_scale_x, contact_cfg.cop_half.1)
@@ -2284,13 +2344,15 @@ pub(crate) fn phase_wrench_mpc(
                 // The WBC selector and MPC wrench must use the same
                 // point. During rolling contact that point is the toe or
                 // heel strip centre rather than the sole centre.
-                let patch_x = if rolling {
-                    (sole_half_l - cop_half.0) * s_pitch.signum()
+                let (patch_x, patch_y) = if let Some((c, _)) = leash {
+                    (c[0], c[1])
+                } else if rolling {
+                    ((sole_half_l - cop_half.0) * s_pitch.signum(), 0.0)
                 } else {
-                    0.0
+                    (0.0, 0.0)
                 };
                 let position =
-                    actual.sole[side] + rotation * na::Vector3::new(patch_x, 0.0, 0.0);
+                    actual.sole[side] + rotation * na::Vector3::new(patch_x, patch_y, 0.0);
                 contacts.push(misa_mpc::wrench_mpc::Contact {
                     position,
                     rotation,
@@ -3841,6 +3903,15 @@ pub(crate) fn phase_wbc(
         // (STAIR_ROLL_PATCH, a narrow strip at the edge of a pitched
         // sole, is removed.)
         None
+    });
+    // COP_LEASH: a loaded stance foot's box cut to the leash around its
+    // measured CoP (the slope's heel cut, when it applies, wins).
+    let cop_patch: [_; 2] = std::array::from_fn(|side| {
+        cop_patch[side].or_else(|| {
+            cop_leash_box(cfg, k, obs, sup, side, contact_cfg.cop_half).map(|(c, h)| {
+                ([prof.sole_centre_x + c[0], c[1], -prof.sole_below_origin], h)
+            })
+        })
     });
     let req = WbcRequest {
         t,

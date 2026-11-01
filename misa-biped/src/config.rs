@@ -219,6 +219,10 @@ impl Config {
                 admit_scheduled: false,
                 admit_z: 0.010,
                 admit_loaded: None,
+                cop_leash: 0.0,
+                cop_leash_tilt: 0.0,
+                cop_leash_fz: 0.15,
+                cop_leash_mpc: false,
             },
             managed: ManagedContactConfig {
                 on: true,
@@ -1046,6 +1050,23 @@ pub struct ContactConfig {
     pub admit_scheduled: bool,
     pub admit_z: f64,
     pub admit_loaded: Option<(f64, f64)>,
+    /// `COP_LEASH` [m] (0 = off): keep a loaded stance foot's CoP box
+    /// (fore/aft) within this distance of the CoP its sole MEASURES
+    /// ([`crate::robot::Observation::sole_cop`], an ankle F/T). A sole
+    /// resting on an unmodelled edge carries no pressure past it: the
+    /// measured CoP stops at the edge while the commanded one runs on to
+    /// the box end and the foot seesaws over it (kyo46rs, 5 mm bumps,
+    /// 2026-11-01). A foot that tips about its own toe or heel measures its
+    /// CoP at that edge, so the leash does not bind there.
+    pub cop_leash: f64,
+    /// `COP_LEASH_TILT` [rad] (0 = always): leash only a sole tilted more
+    /// than this from level (measured, the FK).
+    pub cop_leash_tilt: f64,
+    /// `COP_LEASH_FZ` (fraction of body weight): leash only a foot whose
+    /// measured load is at least this.
+    pub cop_leash_fz: f64,
+    /// `COP_LEASH_MPC`: give the wrench MPC the same box.
+    pub cop_leash_mpc: bool,
 }
 
 impl ContactConfig {

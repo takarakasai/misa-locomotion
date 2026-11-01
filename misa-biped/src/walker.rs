@@ -1138,6 +1138,7 @@ impl<S: WbcStack> Walker<S> {
             tick: obs.tick,
             state: &state,
             contact_fz: obs.contact_fz,
+            sole_cop: obs.sole_cop,
             // The joint angles the posture levels read: the plant's (LEAK,
             // §6.6), or the estimate's under JOINT_Q_EST.
             joint_pos: if wcfg.wbc.joint_q_estimate { &obs.estimate.joint_q } else { obs.joint_pos_plant },

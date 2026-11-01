@@ -119,6 +119,10 @@ pub struct Observation<'a> {
     /// Vertical contact force per foot [N] (the only part of the measured
     /// contacts the controller reads).
     pub contact_fz: [f64; 2],
+    /// Measured CoP per foot in its sole frame [m] (x forward from the sole
+    /// centre, y left), as an ankle F/T reports it; None = no reading. Read
+    /// only by `COP_LEASH`.
+    pub sole_cop: [Option<[f64; 2]>; 2],
     /// LEAK (§6.6 of the extraction plan): the PLANT's joint angles
     /// (harness order), with none of the sensor model's delay or noise.
     /// Read by the posture and arm-hold levels, as before the split; a leak
