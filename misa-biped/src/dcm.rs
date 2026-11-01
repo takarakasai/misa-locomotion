@@ -39,6 +39,12 @@ pub struct ZmpSeg {
     pub p1: na::Vector2<f64>,
     pub t0: f64,
     pub duration: f64,
+    /// A flight (running): the CoM coasts at this horizontal velocity. There
+    /// is no pressure point; `xi_dot = w (xi - c)` makes the CoM's ground
+    /// projection the "virtual ZMP", which moves with the DCM at `v`, so
+    /// `xi - p = v / w` throughout. The backward recursion sets `p0`, `p1`
+    /// from the DCM at the landing: `p1 = xi_1 - v/w`, `p0 = p1 - v T`.
+    pub flight_v: Option<na::Vector2<f64>>,
 }
 
 impl ZmpSeg {
@@ -204,7 +210,41 @@ impl DcmPlan {
                 p1,
                 t0: s.t0,
                 duration: s.duration(),
+                flight_v: None,
             });
+        }
+        // Flights: the coasting velocity is the body's mean one across the
+        // step -- the feet's midpoint from the previous stance (at its
+        // centre) to the next. (Joining the two stance PRESSURE points
+        // instead would have the CoM cross the whole stance width in one
+        // step, ~0.5 m/s sideways; its real sway is a centimetre.)
+        for i in 0..n {
+            if !plan.slices[i].support.is_flight() || i == 0 || i + 1 >= n {
+                continue;
+            }
+            let (a, b) = (&segs[i - 1], &segs[i + 1]);
+            let (ta, tb) = (a.t0 + 0.5 * a.duration, b.t0 + 0.5 * b.duration);
+            if tb - ta > 1e-6 {
+                let ma = fp.at_slice(i - 1).mid_xy();
+                let mb = fp.at_slice(i + 1).mid_xy();
+                let v_mean = (mb - ma) / (tb - ta);
+                // Sideways the body does not coast at the mean (zero) speed:
+                // a stance pushes it toward the next foot, and the periodic,
+                // symmetric LIPM run crosses the flight at
+                //   v = (D/2) w sinh(h) / (cosh(h) + (w Tf/2) sinh(h)),
+                //   h = w Ts/2,
+                // D the lateral distance between the two stance pressures.
+                let yaw = 0.5 * (fp.at_slice(i).yaw[0] + fp.at_slice(i).yaw[1]);
+                let lat = na::Vector2::new(-yaw.sin(), yaw.cos());
+                let pa = (a.p0 + a.p1) * 0.5;
+                let pb = (b.p0 + b.p1) * 0.5;
+                let d = lat.dot(&(pb - pa));
+                let ts = 0.5 * (a.duration + b.duration);
+                let tf = segs[i].duration;
+                let h = 0.5 * omega * ts;
+                let v_lat = 0.5 * d * omega * h.sinh() / (h.cosh() + 0.5 * omega * tf * h.sinh());
+                segs[i].flight_v = Some(v_mean - lat * lat.dot(&v_mean) + lat * v_lat);
+            }
         }
 
         // Pass 2: backward recursion for the DCM.
@@ -232,13 +272,21 @@ impl DcmPlan {
     /// construction can be made consistent again.
     pub fn recompute_eos(&mut self) {
         let omega = self.omega;
-        let segs = &self.segs;
+        let segs = &mut self.segs;
         let mut xi_eos = vec![na::Vector2::zeros(); segs.len()];
         let mut xi_end = segs.last().map(|s| s.p1).unwrap_or_else(na::Vector2::zeros);
         for i in (0..segs.len()).rev() {
+            xi_eos[i] = xi_end;
+            if let Some(v) = segs[i].flight_v {
+                // flight: the virtual ZMP is the coasting CoM, xi - p = v/w
+                let s = &mut segs[i];
+                s.p1 = xi_end - v / omega;
+                s.p0 = s.p1 - v * s.duration;
+                xi_end -= v * s.duration;
+                continue;
+            }
             let s = &segs[i];
             let v_over_w = s.slope() / omega;
-            xi_eos[i] = xi_end;
             xi_end = s.p0 + v_over_w + (xi_end - s.p1 - v_over_w) * (-omega * s.duration).exp();
         }
         self.xi_eos = xi_eos;
@@ -911,5 +959,30 @@ mod timing_tests {
             step_timing(&xi, &target, &p, omega, 1),
             StepTiming::Unreachable
         );
+    }
+
+    #[test]
+    fn flight_segments_coast() {
+        // running: in a flight the DCM keeps a constant offset from the
+        // (virtual) ZMP and is continuous into and out of it
+        let p = crate::gait::GaitParams { t_start: 1.0, t_ds: 0.0, t_ss: 0.2, n_steps: 8, first_swing: crate::gait::RIGHT, t_end: 4.0, t_flight: 0.05 };
+        let g = crate::gait::GaitPlan::new(&p);
+        let st = Footsteps { sole: [na::Vector3::new(0.0, 0.0706, 0.0), na::Vector3::new(0.0, -0.0706, 0.0)], yaw: [0.0, 0.0] };
+        let fp = crate::gait::FootstepPlan::constant_stride(&g, &st, 0.1);
+        let plan = DcmPlan::from_footsteps(&g, &fp, 0.65, 1.0);
+        let fi = g.slices.iter().position(|s| s.support.is_flight()).unwrap();
+        let sl = g.slices[fi];
+        let a = plan.reference(sl.t0 + 0.01);
+        let b = plan.reference(sl.t1 - 0.01);
+        assert!(((a.xi - a.p) - (b.xi - b.p)).norm() < 1e-9, "offset not constant");
+        let before = plan.reference(sl.t0 - 1e-6).xi;
+        let after = plan.reference(sl.t0 + 1e-6).xi;
+        assert!((before - after).norm() < 1e-3, "xi jumps at take-off");
+        let before = plan.reference(sl.t1 - 1e-6).xi;
+        let after = plan.reference(sl.t1 + 1e-6).xi;
+        assert!((before - after).norm() < 1e-3, "xi jumps at landing");
+        // the coasting velocity is forward (stride 0.1 per 0.25 s step)
+        let v = plan.segs[fi].flight_v.unwrap();
+        assert!(v.x > 0.2 && v.x < 0.6, "v = {v:?}");
     }
 }
