@@ -115,6 +115,7 @@ impl Config {
                 zmp_lat_scale: 1.0,
                 zmp_roll: None,
                 com_xy_jerk_max: f64::INFINITY,
+                trig_lpf_hz: 0.0,
             },
             gait: GaitConfig {
                 t_start: 2.0,
@@ -267,6 +268,9 @@ impl Config {
                         probe_speed: 0.05,
                         probe_max: 0.03,
                     },
+                    reanchor: 0.0,
+                    reanchor_max: 0.10,
+                    reanchor_load: 0.3,
                 }
             },
             com_plan: ComPlanConfig {
@@ -345,6 +349,8 @@ impl Config {
                 backend: None,
                 kkt_comp_tol: 1e-6,
                 bench_gate: false,
+                trace_landing_time: false,
+                trace_failures: false,
             },
             mpc_footstep: MpcFootstepConfig {
                 on: false,
@@ -362,6 +368,7 @@ impl Config {
                 two_step_y_in: 0.0,
                 two_step_extra: 8,
                 two_step_scale: 1.0,
+                stair_off: false,
             },
             mpc_cross: MpcCrossConfig { y: 0.0, ex: 0.02, floor: 0.0, hold_z: 0.0, hold_xy: 0.02 },
             push_replan: PushReplanConfig {
@@ -819,6 +826,11 @@ pub struct DcmConfig {
     pub zmp_roll: Option<f64>,
     /// `COM_XY_JERK_MAX` (positive, or infinite = off; checked by the harness).
     pub com_xy_jerk_max: f64,
+    /// `PUSH_TRIG_LPF_HZ` [Hz] (non-negative, 0 = off): a first-order
+    /// low-pass on the DCM error (measured minus reference) that arms the MPC
+    /// landing variable (`MPC_FOOTSTEP_TRIG`) and engages PUSH_REPLAN; their
+    /// placement and every other use of the error stay unfiltered.
+    pub trig_lpf_hz: f64,
 }
 
 impl DcmConfig {
@@ -1145,6 +1157,16 @@ pub struct LandingConfig {
     pub speed_xy: f64,
     pub speed_z: f64,
     pub event: ContactEventConfig,
+    /// `LAND_REANCHOR` [m] (0 = off), `LAND_REANCHOR_MAX` [m],
+    /// `LAND_REANCHOR_LOAD` [body weights]: once per double support, when the
+    /// foot that just landed carries the load, move the plan's position of
+    /// that foot (until it lifts again) onto the measured sole if they differ
+    /// by more than `reanchor` and less than `reanchor_max` (2026-10-31,
+    /// kyo46rs: a pushed swing lands 2-4 cm off its target and the plan keeps
+    /// the stance foot, its DCM reference and its ZMP box where it was not).
+    pub reanchor: f64,
+    pub reanchor_max: f64,
+    pub reanchor_load: f64,
 }
 
 /// Event-driven contact.
@@ -1331,6 +1353,12 @@ pub struct WrenchMpcConfig {
     pub backend: Option<misa_wbc::QpSolver>,
     pub kkt_comp_tol: f64,
     pub bench_gate: bool,
+    /// `MPC_LANDING_TIME_DEBUG`, `MPC_FS_DEBUG` (on when set at all, as the
+    /// MPC's own reads of them were): the MPC's traces
+    /// (`misa_mpc::wrench_mpc::Config::trace_landing_time`, `trace_failures`),
+    /// written to the walker's error sink after each solve.
+    pub trace_landing_time: bool,
+    pub trace_failures: bool,
 }
 
 impl WrenchMpcConfig {
@@ -1373,6 +1401,10 @@ pub struct MpcFootstepConfig {
     /// `MPC_FOOTSTEP2_SCALE`: fraction of the second landing's offset
     /// applied to the plan (1 = all, 0 = decided but not applied).
     pub two_step_scale: f64,
+    /// `MPC_FOOTSTEP_STAIR_OFF`: never arm the landing variable while the
+    /// step is on a known staircase (its zone, `STAIR_ZONE_CROUCH_LEAD` /
+    /// `_TAIL`), as LAND_REANCHOR and MOM_CMP already do.
+    pub stair_off: bool,
 }
 
 /// The MPC landing crossing the stance foot.

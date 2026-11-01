@@ -195,6 +195,7 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
             zmp_lat_scale: num("ZMP_LAT_SCALE", d.zmp_lat_scale),
             zmp_roll: opt("ZMP_ROLL").or(d.zmp_roll),
             com_xy_jerk_max: num("COM_XY_JERK_MAX", d.com_xy_jerk_max),
+            trig_lpf_hz: num("PUSH_TRIG_LPF_HZ", d.trig_lpf_hz).max(0.0),
         }
     };
 
@@ -411,6 +412,9 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
                 probe_speed: num("CONTACT_PROBE_VZ", d.event.probe_speed).max(0.0),
                 probe_max: num("CONTACT_PROBE_MAX", d.event.probe_max).max(0.0),
             },
+            reanchor: num("LAND_REANCHOR", d.reanchor).max(0.0),
+            reanchor_max: num("LAND_REANCHOR_MAX", d.reanchor_max).max(0.0),
+            reanchor_load: num("LAND_REANCHOR_LOAD", d.reanchor_load).max(0.0),
         }
     };
 
@@ -518,6 +522,8 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
             }).or(d.backend),
             kkt_comp_tol: num("MPC_KKT_COMP_TOL", d.kkt_comp_tol),
             bench_gate: flag("MPC_BENCH_GATE", d.bench_gate),
+            trace_landing_time: get("MPC_LANDING_TIME_DEBUG").is_some() || d.trace_landing_time,
+            trace_failures: get("MPC_FS_DEBUG").is_some() || d.trace_failures,
         }
     };
 
@@ -542,6 +548,7 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
             two_step_y_in: num("MPC_FOOTSTEP2_Y_IN", d.two_step_y_in).max(0.0),
             two_step_extra: num("MPC_FOOTSTEP2_N", d.two_step_extra as f64).max(0.0) as usize,
             two_step_scale: num("MPC_FOOTSTEP2_SCALE", d.two_step_scale).max(0.0),
+            stair_off: flag("MPC_FOOTSTEP_STAIR_OFF", d.stair_off),
         }
     };
 

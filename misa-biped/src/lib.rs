@@ -18,9 +18,14 @@
 //! - [`recovery`]     -- push-recovery references (trajopt) and their world frame.
 //! - [`config`]       -- every control knob of the walker, with the code's
 //!   defaults (the harness maps its environment onto it).
+//! - [`kv`]           -- the knobs by name: a key/value lookup -> [`config::Config`].
 //! - [`robot`]        -- the rigid-body model the walker computes with, the
 //!   state it assembles from an estimate (M, h, FK, CoM Jacobian), and the
 //!   per-tick observation.
+//! - [`estimator`]    -- sensor reading -> state estimate (velocity fusion with
+//!   an accelerometer, low-pass filters, the joint-rate clamp).
+//! - [`command`]      -- what is commanded when the WBC degrades (the policy,
+//!   its tally, the gravity + posture fallback).
 //! - [`wbc`]          -- the seam to the whole-body QP: the request the walker
 //!   makes each tick, the solution, and the `WbcStack` trait a stack of QP
 //!   levels implements.
@@ -51,6 +56,8 @@ pub mod contact;
 pub mod tasks;
 pub mod task_stack;
 pub mod sink;
+pub mod estimator;
+pub mod command;
 pub mod walker;
 
 pub use profile::Profile;

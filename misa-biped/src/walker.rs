@@ -74,6 +74,8 @@ pub(crate) struct CtlState {
     pub push_replan_shift: f64,
     /// (slice, inward is +y) latched when the MPC crossing gate opens.
     pub mpc_fs_cross_latched: Option<(usize, bool)>,
+    /// LAND_REANCHOR: the double support whose landing has been checked.
+    pub reanchor_ds: Option<usize>,
     /// CoM preview: the reference ZMP, the predicted CoM and velocity, and
     /// the time of the next solve.
     pub preview_p: na::Vector2<f64>,
@@ -113,6 +115,8 @@ pub(crate) struct CtlState {
     pub mpc_fs_applied: na::Vector2<f64>,
     pub mpc_fs_armed: Option<(usize, usize)>,
     pub mpc_fs_last: na::Vector2<f64>,
+    /// PUSH_TRIG_LPF_HZ: the low-passed DCM error the push triggers read.
+    pub trig_err_f: Option<na::Vector2<f64>>,
     /// The held MPC answer's diagnostics, read only by the logs: the
     /// reference vertical forces and the time it was solved at, the net
     /// pressure point its wrenches imply, and their contact frames (kept
@@ -232,6 +236,7 @@ pub struct WalkerStats {
     pub ds_feasible_total: f64,
     pub n_push_replan: u32,
     pub n_mpc_fs_cross: u32,
+    pub n_reanchor: u32,
     pub preview_count: u32,
     pub preview_failures: u32,
     pub preview_error: f64,
@@ -1030,6 +1035,7 @@ impl WalkerInit {
             push_replan_state: None,
             push_replan_shift: 0.0,
             mpc_fs_cross_latched: None,
+            reanchor_ds: None,
             preview_p: steps.mid_xy(),
             preview_c: com0.xy(),
             preview_v: na::Vector2::zeros(),
@@ -1052,6 +1058,7 @@ impl WalkerInit {
             mpc_fs_applied: na::Vector2::zeros(),
             mpc_fs_armed: None,
             mpc_fs_last: na::Vector2::zeros(),
+            trig_err_f: None,
             diag_mpc_reference: [f64::NAN; 2],
             diag_mpc_time: None,
             diag_mpc_net_cop: [f64::NAN; 2],
@@ -1174,7 +1181,7 @@ impl<S: WbcStack> Walker<S> {
         let ph5 = phase_dcm(ctl, plan, stats, wcfg, k, obs, &actual_feet, &ph3, t, out);
 
         let CmdZmpOut { p_cmd, clamped, zmp_deficit } = phase_cmd_zmp(ctl, plan, stats, wcfg, k, &ph3, &ph5, t, out);
-        let DcmOut { xi, r, dcm_err } = ph5;
+        let DcmOut { xi, r, dcm_err, .. } = ph5;
         let p_cmd = phase_preview(ctl, plan, stats, diag, wcfg, k, obs, &actual_feet, &stance_sides, p_cmd, t);
         let HeightOut { z_ref, a_com } = phase_height(ctl, plan, wcfg, k, obs, &ph3, &stance_sides, &p_cmd, t);
 

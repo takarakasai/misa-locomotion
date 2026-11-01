@@ -593,6 +593,57 @@ pub(crate) fn phase_landing_clock(
             ed.commit();
         }
     }
+    // LAND_REANCHOR [m]: the plan onto the foot that just landed. Measured
+    // 2026-10-31 on kyo46rs (0.9 N*s toward the stance side, early phase):
+    // the pushed swing lands 2-4 cm wide of its target (the WBC uses the
+    // swing leg for the trunk while the stance CoP is at its edge), and the
+    // plan keeps that foot where it was meant to land -- the DCM reference
+    // and the ZMP box of the next single support then sit 4 cm inside the
+    // real stance sole, the CoP saturates at its inner edge and the next
+    // swing is flung inward into the stance leg. Once per double support,
+    // when the landed foot carries LAND_REANCHOR_LOAD of the weight, its
+    // planned position (until it lifts again, `shift_next`) moves onto the
+    // measured sole if they differ by more than LAND_REANCHOR and less than
+    // LAND_REANCHOR_MAX; not on a known staircase (its zone). 0 = off.
+    let reanchor = cfg.landing.reanchor;
+    if reanchor > 0.0 {
+        let i = plan.gait().index_at(t + 1e-6);
+        let is_ds = |j: usize| matches!(plan.gait().slices[j].support, Support::Double);
+        if is_ds(i) {
+            let mut first = i;
+            while first > 0 && is_ds(first - 1) {
+                first -= 1;
+            }
+            let in_stair_zone = k.stairs.as_ref().is_some_and(|st| {
+                (st.riser.abs() > 1e-6 || st.down_n > 0)
+                    && crate::height::stair_zone_crouch(
+                        plan.footsteps().at_slice(i).mid_xy().x,
+                        st,
+                        cfg.stair_zone.lead,
+                        cfg.stair_zone.tail,
+                        1.0,
+                    ) > 0.0
+            });
+            if ctl.reanchor_ds != Some(first)
+                && !in_stair_zone
+                && let Some(sw) = first.checked_sub(1).and_then(|j| plan.gait().slices[j].support.swing())
+                && obs.contact_fz[sw] >= cfg.landing.reanchor_load * total_mass * G
+            {
+                ctl.reanchor_ds = Some(first);
+                let planned = plan.footsteps().at_slice(i).xy(sw);
+                let d = actual.sole[sw].xy() - planned;
+                if d.norm() > reanchor && d.norm() < cfg.landing.reanchor_max {
+                    let mut ed = plan.edit(Writer::ContactEvent);
+                    ed.shift_next(i, sw, d);
+                    ed.commit();
+                    stats.n_reanchor += 1;
+                    if debug.replan {
+                        outln!(out, "  [reanchor] t={t:.3} ds {first} foot {sw} plan ({:.3},{:+.3}) -> sole ({:.3},{:+.3})", planned.x, planned.y, actual.sole[sw].x, actual.sole[sw].y);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// What phase 3 found: the schedule's slice now, the support (all `Double`
@@ -1107,6 +1158,10 @@ pub(crate) struct DcmOut {
     pub xi: na::Vector2<f64>,
     pub r: DcmRef,
     pub dcm_err: f64,
+    /// The DCM error the push triggers read: `xi - r.xi`, low-passed with
+    /// PUSH_TRIG_LPF_HZ (unfiltered when off, so `trig_err.norm()` is then
+    /// `dcm_err` exactly).
+    pub trig_err: na::Vector2<f64>,
 }
 
 /// Phase 5: the DCM and its reference, then the plan's push responses in
@@ -1218,6 +1273,27 @@ pub(crate) fn phase_dcm(
         }
     }
     let dcm_err = (xi - r.xi).norm();
+    // PUSH_TRIG_LPF_HZ: the triggers' error, low-passed. Measured 2026-11-01
+    // on kyo46rs (v3 + the G1 push keys): with the sensor noise of the
+    // family's large-noise condition (velocity 0.03, joint rate 0.1) a
+    // single tick's DCM error exceeds the MPC landing's 7.5 mm trigger 42 %
+    // of the time (0 % without noise, 1.4 % under a 0.9 N*s push); the
+    // landing variable armed on every member (median 113 times) and
+    // PUSH_REPLAN engaged on noise, and the condition fell 2 better / 41
+    // worse and 3 / 30. Filtering the error, not the DCM, keeps the
+    // reference's own motion out of the lag.
+    let trig_err = {
+        let e = xi - r.xi;
+        let hz = cfg.dcm.trig_lpf_hz;
+        if hz > 0.0 {
+            let a = k.dt / (1.0 / (2.0 * std::f64::consts::PI * hz) + k.dt);
+            let f = ctl.trig_err_f.get_or_insert(e);
+            *f += a * (e - *f);
+            *f
+        } else {
+            e
+        }
+    };
     if push_yield_v > 0.0
         && !plan.claims().done(Writer::PushYield)
         && vx2_sched
@@ -1325,16 +1401,28 @@ pub(crate) fn phase_dcm(
                     // size by moving the CoP; only the rest diverges.
                     let half = na::Vector2::new(sole_half_l * push_replan_ankle[0], sole_half_w * push_replan_ankle[1]);
                     let grow = (omega * rem).exp();
-                    let d = na::Vector2::new(
-                        {
-                            let dp = e.x.clamp(-half.x, half.x);
-                            dp + (e.x - dp) * grow
-                        },
-                        {
-                            let dp = e.y.clamp(-half.y, half.y);
-                            dp + (e.y - dp) * grow
-                        },
-                    );
+                    let project = |e: na::Vector2<f64>| {
+                        na::Vector2::new(
+                            {
+                                let dp = e.x.clamp(-half.x, half.x);
+                                dp + (e.x - dp) * grow
+                            },
+                            {
+                                let dp = e.y.clamp(-half.y, half.y);
+                                dp + (e.y - dp) * grow
+                            },
+                        )
+                    };
+                    let d = project(e);
+                    // PUSH_TRIG_LPF_HZ: engage on the low-passed error (the
+                    // filtered `xi - r.xi` plus the reference's own offset
+                    // from the plan in force); the landing still follows `d`.
+                    let (e_trig, d_trig) = if cfg.dcm.trig_lpf_hz > 0.0 {
+                        let e_t = trig_err + (r.xi - orig_plan.reference(t).xi);
+                        (e_t, project(e_t))
+                    } else {
+                        (e, d)
+                    };
                     let v_now = (vx2_sched && vx2_z_from.is_some_and(|t0| t >= t0))
                         .then_some(vx2_cmd_speed)
                         .flatten();
@@ -1344,7 +1432,7 @@ pub(crate) fn phase_dcm(
                     // removed.)
                     let owns_landing = plan.claims().landing_owner(i) == Some(Writer::PushReplan);
                     if owns_landing
-                        || (back_ok && d.norm() > push_replan_trig && e.norm() > push_replan_emin)
+                        || (back_ok && d_trig.norm() > push_replan_trig && e_trig.norm() > push_replan_emin)
                     {
                         let st = orig_fs.at_slice(i).xy(stance);
                         let mut l = *base + d;
@@ -1526,7 +1614,7 @@ pub(crate) fn phase_dcm(
         
         }
     }
-    DcmOut { xi, r, dcm_err }
+    DcmOut { xi, r, dcm_err, trig_err }
 }
 
 /// What phase 6 found: the commanded ZMP clamped into the support, how far
@@ -2185,6 +2273,13 @@ pub(crate) fn phase_wrench_mpc(
     let two_step = cfg.mpc_footstep.two_step && plan.gait().slices.iter().any(|s| s.support.is_flight());
     // the capture rows (only) look this far, so the second landing is inside
     let n_cap = if two_step { cfg.mpc.horizon + cfg.mpc_footstep.two_step_extra } else { cfg.mpc.horizon };
+    // MPC_FOOTSTEP_STAIR_OFF: no landing variable on a known staircase.
+    // Measured 2026-10-31 on kyo46rs (v3 + the G1 push keys): the one-step
+    // descent's long stair step (5x the cruise step) carries a DCM error
+    // above MPC_FOOTSTEP_TRIG with no push at all, the variable arms on every
+    // member and moves the landing, and 20 mm descents fall 0 better / 63
+    // worse over three seeds; without the variable they are unchanged.
+    let mpc_footstep_stair_off = cfg.mpc_footstep.stair_off;
     // Arm the landing variable only once the DCM error of this single
     // support reaches this value [m] (latched for the rest of the step), the
     // rule the contact_plan adjuster uses (CP_TRIG): an undisturbed step
@@ -2257,7 +2352,10 @@ pub(crate) fn phase_wrench_mpc(
     let st = obs_state(obs);
     let (com, com_vel, v_dvec, data) = (st.com, st.com_vel, &st.v_dvec, &st.data);
     let support = sup.support;
-    let (xi, dcm_err) = (dcm.xi, dcm.dcm_err);
+    let xi = dcm.xi;
+    // The landing variable arms on the push triggers' error (PUSH_TRIG_LPF_HZ;
+    // its norm is `dcm_err` itself when the filter is off).
+    let dcm_err_trig = dcm.trig_err.norm();
     let a_com = *a_com;
     let mut mpc_capture_ns = 0u128;
     if stair_wrench_mpc && wrench_mpc_always {
@@ -2483,10 +2581,21 @@ pub(crate) fn phase_wrench_mpc(
                 && plan.claims().landing_owner(plan.gait().index_at(t)) != Some(Writer::PushReplan)
                 && wrench_mpc_apply
                 && let Support::Single { swing, .. } = support
+                && !(mpc_footstep_stair_off
+                    && k.stairs.as_ref().is_some_and(|st| {
+                        (st.riser.abs() > 1e-6 || st.down_n > 0)
+                            && crate::height::stair_zone_crouch(
+                                plan.footsteps().at_slice(plan.gait().index_at(t)).mid_xy().x,
+                                st,
+                                cfg.stair_zone.lead,
+                                cfg.stair_zone.tail,
+                                1.0,
+                            ) > 0.0
+                    }))
                 && {
                     let i = plan.gait().index_at(t);
                     if mpc_footstep_trig > 0.0
-                        && dcm_err >= mpc_footstep_trig
+                        && dcm_err_trig >= mpc_footstep_trig
                         && !ctl.mpc_fs_armed.is_some_and(|(a, u)| a <= i && i <= u)
                     {
                         // A step is two slices (single + double support).
@@ -2800,6 +2909,8 @@ pub(crate) fn phase_wrench_mpc(
             if let Some(backend) = mpc_backend_override {
                 config.qp.solver = backend;
             }
+            config.trace_landing_time = cfg.mpc.trace_landing_time;
+            config.trace_failures = cfg.mpc.trace_failures;
             if diag.wants_mpc_input() {
                 let capture_start = std::time::Instant::now();
                 diag.mpc_input(t, dt, stair_wrench_dt, &input, &config);
@@ -2807,12 +2918,17 @@ pub(crate) fn phase_wrench_mpc(
             }
             let previous_age = ctl.diag_mpc_time.map_or(-1.0, |stamp| t - stamp);
             let mpc_solve_start = std::time::Instant::now();
-            let mpc_result = misa_mpc::wrench_mpc::solve_with_workspace(
+            let mut mpc_trace = Vec::new();
+            let mpc_result = misa_mpc::wrench_mpc::solve_traced(
                 &input,
                 &config,
                 None, // no warm start (MPC_QP_WARM removed)
+                &mut mpc_trace,
             );
             let mpc_solve_ns = mpc_solve_start.elapsed().as_nanos();
+            for line in &mpc_trace {
+                out.err_line(line);
+            }
             {
                 let mask = u8::from(stance_sides.contains(&0))
                     | (u8::from(stance_sides.contains(&1)) << 1);
