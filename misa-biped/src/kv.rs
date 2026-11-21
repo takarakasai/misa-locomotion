@@ -285,6 +285,7 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
             run_foot_kx: opt("RUN_FOOT_KX").or(d.run_foot_kx),
             run_foot_tau: num("RUN_FOOT_TAU", d.run_foot_tau).max(1e-3),
             run_foot_max: num("RUN_FOOT_MAX", d.run_foot_max).max(0.0),
+            run_z_level: num("RUN_Z_LEVEL", d.run_z_level as f64).clamp(0.0, 2.0) as u8,
             heel_toe: flag("HEEL_TOE", d.heel_toe),
             heel_strike_deg: num("HEEL_STRIKE_DEG", d.heel_strike_deg),
             toe_off_deg: num("TOE_OFF_DEG", d.toe_off_deg),

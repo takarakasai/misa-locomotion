@@ -180,6 +180,7 @@ impl Config {
                 run_foot_kx: None,
                 run_foot_tau: 0.4,
                 run_foot_max: 0.08,
+                run_z_level: 0,
                 heel_toe: false,
                 heel_strike_deg: 6.0,
                 toe_off_deg: 12.0,
@@ -1057,6 +1058,17 @@ pub struct SwingConfig {
     pub run_foot_kx: Option<f64>,
     pub run_foot_tau: f64,
     pub run_foot_max: f64,
+    /// `RUN_Z_LEVEL`: running only, bend each stance's vertical push so it
+    /// starts AND ends at the nominal height (0 = off). The half-sine push
+    /// of a stance that leaves rest into a flight (or lands from one into
+    /// rest) rises (sinks) by Ts·(v0 + v1)/2 -- 6 cm at Ts 0.3 s, Tf 80 ms
+    /// -- while the next stance's profile starts from the nominal height
+    /// again: measured on G1, the CoM landed the first flight 5 cm above a
+    /// reference that then asked for 7 cm lower, and the next swing foot
+    /// dragged on the floor (~60-90 N) through its whole swing. 1 = the
+    /// stances next to a non-flight only (the start and the stop), 2 =
+    /// every stance (a flight retimed by touchdown also leaves a residue).
+    pub run_z_level: u8,
     /// `HEEL_TOE`: walking with heel strike and toe-off -- the landing
     /// foot comes down toe-up (`HEEL_STRIKE_DEG`) on its heel edge and rolls
     /// flat over `HEEL_ROLL_TIME` [s]; the rear foot rolls onto its toe edge
