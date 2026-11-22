@@ -1080,6 +1080,11 @@ pub struct SwingConfig {
     pub run_foot_xi_g: f64,
     pub run_foot_xi_gy: f64,
     pub run_foot_xi_max: f64,
+    // (RUN_FOOT_VPLAN, comparing against the plan's speed vx*t_step/(t_step
+    // + T_FLIGHT) instead of the commanded vx, was FALSIFIED 2026-11-22 --
+    // base 44 -> 28 of 48 and +7/-110 over seven conditions -- and is
+    // removed: the commanded vx is 20 % above the plan's, and the few mm
+    // that pulls every foot back is load-bearing.)
     /// `RUN_Z_LEVEL`: running only, bend each stance's vertical push so it
     /// starts AND ends at the nominal height (0 = off). The half-sine push
     /// of a stance that leaves rest into a flight (or lands from one into
