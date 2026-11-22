@@ -4148,7 +4148,12 @@ pub(crate) fn phase_task_refs(
         let (c_, s_) = (yaw.cos(), yaw.sin());
         let e = ema - v_cmd;
         let (ex, ey) = (c_ * e.x + s_ * e.y, -s_ * e.x + c_ * e.y);
-        let kx = cfg.swing.run_foot_kx.unwrap_or(cfg.swing.run_foot_k);
+        let mut kx = cfg.swing.run_foot_kx.unwrap_or(cfg.swing.run_foot_k);
+        if cfg.swing.run_foot_kx_steps > 0
+            && plan.gait().slices.iter().filter(|s| s.support.is_flight() && s.t0 <= t).count() > cfg.swing.run_foot_kx_steps
+        {
+            kx = cfg.swing.run_foot_kx_late;
+        }
         let (dx, dy) = (kx * ex, cfg.swing.run_foot_k * ey);
         let mut dv = na::Vector2::new(c_ * dx - s_ * dy, s_ * dx + c_ * dy);
         let m = cfg.swing.run_foot_max;

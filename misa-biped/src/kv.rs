@@ -290,6 +290,8 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
             run_foot_xi_g: num("RUN_FOOT_XI_G", d.run_foot_xi_g),
             run_foot_xi_gy: num("RUN_FOOT_XI_GY", d.run_foot_xi_gy),
             run_foot_xi_max: num("RUN_FOOT_XI_MAX", d.run_foot_xi_max).max(0.0),
+            run_foot_kx_steps: num("RUN_FOOT_KX_STEPS", d.run_foot_kx_steps as f64).max(0.0) as usize,
+            run_foot_kx_late: num("RUN_FOOT_KX_LATE", d.run_foot_kx_late),
             run_z_level: num("RUN_Z_LEVEL", d.run_z_level as f64).clamp(0.0, 2.0) as u8,
             heel_toe: flag("HEEL_TOE", d.heel_toe),
             heel_strike_deg: num("HEEL_STRIKE_DEG", d.heel_strike_deg),

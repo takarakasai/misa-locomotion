@@ -185,6 +185,8 @@ impl Config {
                 run_foot_xi_g: 0.0,
                 run_foot_xi_gy: 0.0,
                 run_foot_xi_max: 0.10,
+                run_foot_kx_steps: 0,
+                run_foot_kx_late: 0.0,
                 run_z_level: 0,
                 heel_toe: false,
                 heel_strike_deg: 6.0,
@@ -1080,6 +1082,14 @@ pub struct SwingConfig {
     pub run_foot_xi_g: f64,
     pub run_foot_xi_gy: f64,
     pub run_foot_xi_max: f64,
+    /// `RUN_FOOT_KX_STEPS` / `_LATE`: the sagittal gain `RUN_FOOT_KX` holds
+    /// over the first N flights of the run only, `RUN_FOOT_KX_LATE` after
+    /// (0 = off, the gain holds throughout). Measured 2026-11-22 with
+    /// `RUN_FOOT_XI_G`: the velocity term saves the start under low friction
+    /// (it sets the first feet short while the speed lags) and costs the
+    /// pushes later in the run.
+    pub run_foot_kx_steps: usize,
+    pub run_foot_kx_late: f64,
     // (RUN_FOOT_VPLAN, comparing against the plan's speed vx*t_step/(t_step
     // + T_FLIGHT) instead of the commanded vx, was FALSIFIED 2026-11-22 --
     // base 44 -> 28 of 48 and +7/-110 over seven conditions -- and is
