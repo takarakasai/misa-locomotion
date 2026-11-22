@@ -2239,7 +2239,7 @@ pub(crate) fn phase_height(
         return HeightOut { z_ref: com.z, a_com: na::Vector3::new(0.0, 0.0, -G) };
     }
     if let Support::Single { .. } = sup.support
-        && let Some((z, zd, zdd)) = run_vertical(slices, t, z_ref)
+        && let Some((z, zd, zdd)) = run_vertical(slices, t, z_ref, cfg.swing.run_z_level)
     {
         let a_z = zdd + kp_com * (z - com.z) + kd_com * (zd - com_vel.z);
         return HeightOut { z_ref: z, a_com: na::Vector3::new(a_xy.x, a_xy.y, a_z) };
@@ -2507,7 +2507,7 @@ pub(crate) fn phase_wrench_mpc(
                 // m(g + z̈) in a stance next to one
                 let node_t = t + stage_dt;
                 let node_sup = plan.gait().support_at(node_t);
-                let weight = match run_vertical(&plan.gait().slices, node_t, 0.0) {
+                let weight = match run_vertical(&plan.gait().slices, node_t, 0.0, cfg.swing.run_z_level) {
                     _ if node_sup.is_flight() => 0.0,
                     Some((_, _, zdd)) => total_mass * (G + zdd).max(0.0),
                     None => weight,
@@ -2852,7 +2852,7 @@ pub(crate) fn phase_wrench_mpc(
                                 a.x = 0.0;
                                 a.y = 0.0;
                             }
-                            if let Some((z, zd, zdd)) = run_vertical(&plan.gait().slices, tk, z0) {
+                            if let Some((z, zd, zdd)) = run_vertical(&plan.gait().slices, tk, z0, cfg.swing.run_z_level) {
                                 c.z = z;
                                 v.z = zd;
                                 a.z = zdd;
@@ -4659,7 +4659,10 @@ pub(crate) fn phase_end_tick(ctl: &mut CtlState, plan: &mut Plan, cfg: &Config, 
 /// (the impulse balance of a periodic run: the stance's mean vertical force
 /// is m·g·(Ts + Tf)/Ts); `z0` is the height at the stance's touchdown. A
 /// flight is ballistic from the preceding stance's take-off state.
-pub(crate) fn run_vertical(slices: &[crate::gait::Slice], ta: f64, z0: f64) -> Option<(f64, f64, f64)> {
+/// `level` is `RUN_Z_LEVEL`: the stance's net rise `Δ = Ts·(v0 + v1)/2` is
+/// taken out along `s(τ) = τ/Ts - sin(2πτ/Ts)/2π` (zero slope at both ends,
+/// so the touchdown and take-off velocities are kept).
+pub(crate) fn run_vertical(slices: &[crate::gait::Slice], ta: f64, z0: f64, level: u8) -> Option<(f64, f64, f64)> {
     let n = slices.len();
     let i = slices.iter().position(|s| ta < s.t1).unwrap_or(n - 1);
     let flight_dur = |j: Option<usize>| {
@@ -4679,10 +4682,20 @@ pub(crate) fn run_vertical(slices: &[crate::gait::Slice], ta: f64, z0: f64) -> O
         let (v0, v1) = (-G * tf0 / 2.0, G * tf1 / 2.0);
         let a = PI / (2.0 * ts) * (v1 - v0 + G * ts);
         let w = PI / ts;
-        Some((
+        let (z, zd, zdd) = (
             z0 + v0 * tau - 0.5 * G * tau * tau + a / w * (tau - (w * tau).sin() / w),
             v0 - G * tau + a / w * (1.0 - (w * tau).cos()),
             -G + a * (w * tau).sin(),
+        );
+        if level == 0 || (level == 1 && tf0 > 0.0 && tf1 > 0.0) {
+            return Some((z, zd, zdd));
+        }
+        let d = 0.5 * ts * (v0 + v1);
+        let w2 = 2.0 * w;
+        Some((
+            z - d * (tau / ts - (w2 * tau).sin() / (2.0 * PI)),
+            zd - d * (1.0 - (w2 * tau).cos()) / ts,
+            zdd - d * w2 * (w2 * tau).sin() / ts,
         ))
     };
     if slices[i].support.is_flight() {
@@ -4692,4 +4705,40 @@ pub(crate) fn run_vertical(slices: &[crate::gait::Slice], ta: f64, z0: f64) -> O
         return Some((z1 + v1 * tau - 0.5 * G * tau * tau, v1 - G * tau, -G));
     }
     stance(i, ta - slices[i].t0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_vertical;
+    use crate::gait::{GaitParams, GaitPlan, RIGHT};
+
+    // RUN_Z_LEVEL=1 takes the net rise out of the first and the last stance
+    // of a run (start at the nominal height, end there with the take-off or
+    // rest velocity), and leaves the stances between two flights alone.
+    #[test]
+    fn run_z_level_levels_the_edge_stances() {
+        let p = GaitParams { t_start: 1.0, t_ds: 0.0, t_ss: 0.3, n_steps: 4, first_swing: RIGHT, t_end: 4.0, t_flight: 0.08 };
+        let g = GaitPlan::new(&p);
+        let sl = &g.slices;
+        let z0 = 0.68;
+        let g0 = crate::dcm::G;
+        // slice 1 is the first stance, slice 3 the second
+        let (a, b) = (sl[1], sl[3]);
+        let end = |s: &crate::gait::Slice, lv| run_vertical(sl, s.t1 - 1e-9, z0, lv).unwrap();
+        let (z_off, v_off, _) = end(&a, 0);
+        let (z_on, v_on, _) = end(&a, 1);
+        assert!((z_off - z0 - 0.5 * 0.3 * g0 * 0.04).abs() < 1e-6, "off: rises Ts·v1/2");
+        assert!((z_on - z0).abs() < 1e-6 && (v_on - v_off).abs() < 1e-6, "on: level, same take-off");
+        let (z1, _, _) = run_vertical(sl, a.t0 + 1e-9, z0, 1).unwrap();
+        assert!((z1 - z0).abs() < 1e-6);
+        // a stance between two flights is untouched
+        for k in 0..20 {
+            let t = b.t0 + b.duration() * k as f64 / 20.0;
+            assert_eq!(run_vertical(sl, t, z0, 0), run_vertical(sl, t, z0, 1));
+        }
+        // the last stance lands into rest: level too
+        let last = sl.iter().rev().find(|s| s.support.swing().is_some()).unwrap();
+        let (z_l, v_l, _) = end(last, 1);
+        assert!((z_l - z0).abs() < 1e-6 && v_l.abs() < 1e-6);
+    }
 }

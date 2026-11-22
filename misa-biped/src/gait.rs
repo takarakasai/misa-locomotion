@@ -215,6 +215,14 @@ impl GaitPlan {
                 }
                 slices.push(Slice { support: Support::Flight { next: swing }, t0: t, t1: t + p.t_flight });
                 t += p.t_flight;
+            } else if p.t_flight > 0.0 && p.t_ds <= 0.0 && p.t_end > t {
+                // The last step of a run with no double support: land it
+                // straight into the final stand. A zero-length double support
+                // here hid the landing from every "the slice before this
+                // double support is the step that just ended" lookup (the
+                // scheduled admission, the load ramp, DS_FEASIBLE): measured
+                // on G1 at 0.2 m/s, the last foot was never admitted, had no
+                // task, and rose to 0.9 m within a second of the stop.
             } else {
                 slices.push(Slice {
                     support: Support::Double,
