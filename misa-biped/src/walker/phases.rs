@@ -4157,6 +4157,20 @@ pub(crate) fn phase_task_refs(
         }
         run_foot_dv = Some(dv);
     }
+    // RUN_FOOT_XI_G: the touchdown follows the DCM's error against the plan
+    if running && (cfg.swing.run_foot_xi_g != 0.0 || cfg.swing.run_foot_xi_gy != 0.0) {
+        let yaw = 0.5 * (sup.steps.yaw[0] + sup.steps.yaw[1]);
+        let (c_, s_) = (yaw.cos(), yaw.sin());
+        let e = dcm.xi - dcm.r.xi;
+        let (ex, ey) = (c_ * e.x + s_ * e.y, -s_ * e.x + c_ * e.y);
+        let (dx, dy) = (cfg.swing.run_foot_xi_g * ex, cfg.swing.run_foot_xi_gy * ey);
+        let mut d = na::Vector2::new(c_ * dx - s_ * dy, s_ * dx + c_ * dy);
+        let m = cfg.swing.run_foot_xi_max;
+        if d.norm() > m {
+            d *= m / d.norm();
+        }
+        run_foot_dv = Some(run_foot_dv.unwrap_or_else(na::Vector2::zeros) + d);
+    }
     if running {
         let slices = &plan.gait().slices;
         let mut built: Vec<SwingRef> = Vec::new();

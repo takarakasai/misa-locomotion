@@ -182,6 +182,9 @@ impl Config {
                 run_foot_kx: None,
                 run_foot_tau: 0.4,
                 run_foot_max: 0.08,
+                run_foot_xi_g: 0.0,
+                run_foot_xi_gy: 0.0,
+                run_foot_xi_max: 0.10,
                 run_z_level: 0,
                 heel_toe: false,
                 heel_strike_deg: 6.0,
@@ -1067,6 +1070,16 @@ pub struct SwingConfig {
     pub run_foot_kx: Option<f64>,
     pub run_foot_tau: f64,
     pub run_foot_max: f64,
+    /// `RUN_FOOT_XI_G` / `_GY`: running only, the touchdown also moves by
+    /// this gain times the DCM's error against the plan's reference
+    /// (sagittal / lateral, heading frame; clamped to `RUN_FOOT_XI_MAX` m).
+    /// The running footholds are a world-fixed plan: a CoM that falls
+    /// behind it lands its foot ahead of itself, brakes, and falls further
+    /// behind (measured 2026-11-22: the last form of every running fall).
+    /// 0 = off.
+    pub run_foot_xi_g: f64,
+    pub run_foot_xi_gy: f64,
+    pub run_foot_xi_max: f64,
     /// `RUN_Z_LEVEL`: running only, bend each stance's vertical push so it
     /// starts AND ends at the nominal height (0 = off). The half-sine push
     /// of a stance that leaves rest into a flight (or lands from one into
