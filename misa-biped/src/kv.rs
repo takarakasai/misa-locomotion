@@ -485,6 +485,8 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
             w_res: num("CP_W_RES", d.w_res),
             dead_u: num("CP_DEAD_U", d.dead_u),
             dead_t: num("CP_DEAD_T", d.dead_t),
+            run_cross_hold: num("CP_RUN_CROSS_HOLD", d.run_cross_hold).max(0.0),
+            run_cross_ext: num("CP_RUN_CROSS_EXT", d.run_cross_ext).max(0.0),
         }
     };
 

@@ -1768,7 +1768,21 @@ pub(crate) fn phase_cmd_zmp(
         // (CP_J_AUTO, the sensitivity differenced from the plan, and
         // CP_TOUCHDOWN, planning for the DCM at touchdown, were not
         // adopted and are removed.)
-        let dec = crate::contact_plan::plan(&sit, &contact_plan_cfg);
+        let mut dec = crate::contact_plan::plan(&sit, &contact_plan_cfg);
+        // CP_RUN_CROSS_HOLD: running, the DCM off toward the stance side --
+        // hold the stance (its nominal end, scaled) instead of cutting it.
+        if cfg.contact_plan.run_cross_hold > 0.0 && plan.gait().slices.iter().any(|s| s.support.is_flight()) {
+            let yaw = 0.5 * (steps.yaw[0] + steps.yaw[1]);
+            let e = xi - r.xi;
+            let ey = -yaw.sin() * e.x + yaw.cos() * e.y;
+            if ey * sit.swing_sign < -cfg.contact_plan.run_cross_hold {
+                let remaining = (sit.nominal_end - t).max(0.0);
+                dec.new_end = Some(t + remaining * cfg.contact_plan.run_cross_ext);
+                if debug.cp {
+                    outln!(out, "  [cp] t={t:.3} slice={i} cross hold: ey={ey:+.3} -> end {:.3}", t + remaining * cfg.contact_plan.run_cross_ext);
+                }
+            }
+        }
         if debug.cp {
             outln!(out, 
                 "  [cp] t={t:.3} slice={i} err={dcm_err:.4} xi=({:.3},{:+.3}) eos_plan=({:.3},{:+.3}) pred_nom=({:.3},{:+.3}) shift=({:+.3},{:+.3}) dT={:+.3} unmet={:.4} cost={:.3}",

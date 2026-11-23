@@ -323,6 +323,8 @@ impl Config {
                 w_res: 100.0,
                 dead_u: 0.002,
                 dead_t: 0.005,
+                run_cross_hold: 0.0,
+                run_cross_ext: 1.0,
             },
             double_support: DoubleSupportConfig {
                 feasible: false,
@@ -1403,6 +1405,17 @@ pub struct ContactPlanConfig {
     pub w_res: f64,
     pub dead_u: f64,
     pub dead_t: f64,
+    /// `CP_RUN_CROSS_HOLD` [m]: running only. When the DCM's lateral error
+    /// against the plan points toward the STANCE side by more than this, the
+    /// swing foot would have to cross to catch it, and a sooner landing only
+    /// brings the crossing sooner; the stance's end is then set to
+    /// `CP_RUN_CROSS_EXT` x the remaining nominal duration instead of the
+    /// planner's choice (the stance foot's pressure gets the time to push
+    /// the DCM back). Measured 2026-11-23 (§72): after a right push on the
+    /// right-foot stance the planner cut every stance to its 0.5 bound and
+    /// the run diverged sideways. 0 = off (bit-identical).
+    pub run_cross_hold: f64,
+    pub run_cross_ext: f64,
 }
 
 impl ContactPlanConfig {
