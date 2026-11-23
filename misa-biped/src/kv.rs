@@ -142,6 +142,8 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
             friction_mu: opt("friction_mu").or(d.friction_mu),
             mu_assumed: opt("MU_ASSUMED").or(d.mu_assumed),
             joint_q_estimate: flag("JOINT_Q_EST", d.joint_q_estimate),
+            sense_pred_ticks: num("SENSE_PRED_TICKS", d.sense_pred_ticks as f64).max(0.0) as usize,
+            sense_pred_vel_only: flag("SENSE_PRED_VEL_ONLY", d.sense_pred_vel_only),
             f_max_scale: num("F_MAX_SCALE", d.f_max_scale),
             f_max: opt("F_MAX").or(d.f_max),
             eom_hard: flag("EOM_HARD", d.eom_hard),

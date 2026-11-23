@@ -384,6 +384,9 @@ pub struct Walker<S: WbcStack> {
     stack: S,
     /// The time of the last `step` (`end_tick` closes that tick).
     t: f64,
+    /// The WBC's generalised accelerations of the last
+    /// `cfg.wbc.sense_pred_ticks` ticks, oldest first (the predictor).
+    qdd_hist: std::collections::VecDeque<na::DVector<f64>>,
 }
 
 impl WalkerInit {
@@ -1136,6 +1139,7 @@ impl WalkerInit {
             stats: WalkerStats::default(),
             stack,
             t: 0.0,
+            qdd_hist: std::collections::VecDeque::new(),
         }
     }
 }
@@ -1156,7 +1160,12 @@ impl<S: WbcStack> Walker<S> {
         // The state from the estimate (S14; the harness assembled it
         // before): q / v, M with the armature, h with the damping, the FK,
         // the CoM and its Jacobian. The phases read it through `TickObs`.
-        let state = robot.assemble(obs.estimate);
+        // SENSE_PRED_TICKS: the estimate advanced by the last ticks' own
+        // accelerations (the reading's age plus the torques in flight).
+        let predicted = (wcfg.wbc.sense_pred_ticks > 0)
+            .then(|| robot.predict(obs.estimate, self.qdd_hist.iter(), k.dt, wcfg.wbc.sense_pred_vel_only));
+        let estimate = predicted.as_ref().unwrap_or(obs.estimate);
+        let state = robot.assemble(estimate);
         let obs = &TickObs {
             tick: obs.tick,
             state: &state,
@@ -1164,7 +1173,7 @@ impl<S: WbcStack> Walker<S> {
             sole_cop: obs.sole_cop,
             // The joint angles the posture levels read: the plant's (LEAK,
             // §6.6), or the estimate's under JOINT_Q_EST.
-            joint_pos: if wcfg.wbc.joint_q_estimate { &obs.estimate.joint_q } else { obs.joint_pos_plant },
+            joint_pos: if wcfg.wbc.joint_q_estimate { &estimate.joint_q } else { obs.joint_pos_plant },
         };
         let st = obs_state(obs);
         let data = &st.data;
@@ -1299,6 +1308,12 @@ impl<S: WbcStack> Walker<S> {
             hip_z,
             stride_max_now,
         };
+        if wcfg.wbc.sense_pred_ticks > 0 {
+            self.qdd_hist.push_back(extracted.qddot.clone());
+            while self.qdd_hist.len() > wcfg.wbc.sense_pred_ticks {
+                self.qdd_hist.pop_front();
+            }
+        }
         StepOutput { command: Command { sol, extracted, tau_gravity, rejected, degraded }, record, state }
     }
 

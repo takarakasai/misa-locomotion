@@ -180,6 +180,58 @@ impl RobotModel {
         (q, v)
     }
 
+    /// The estimate advanced by `qdd` (generalised accelerations, oldest
+    /// first), one control period `dt` each (`Config::wbc.sense_pred_ticks`).
+    /// The base is integrated in its body frame, where misarta's free-flyer
+    /// velocity `[omega_b; v_b]` lives and `qddot` is its time derivative;
+    /// the joints with a measured rate likewise. With `vel_only` the
+    /// accelerations are ignored (a constant-velocity extrapolation over as
+    /// many periods as `qdd` holds).
+    pub fn predict<'a>(
+        &self,
+        est: &StateEstimate,
+        qdd: impl Iterator<Item = &'a na::DVector<f64>>,
+        dt: f64,
+        vel_only: bool,
+    ) -> StateEstimate {
+        let mut out = est.clone();
+        let mut r = est.base_quat;
+        let mut p = na::Vector3::from(est.base_pos);
+        let mut w = r.inverse_transform_vector(&na::Vector3::from(est.base_ang_vel_w));
+        let mut v = r.inverse_transform_vector(&na::Vector3::from(est.base_lin_vel_w));
+        let joints: Vec<(usize, usize)> = (0..self.joint_names.len())
+            .filter_map(|ji| {
+                let mi = self.a2m[ji]?;
+                (self.model.joints[mi].joint_type.nv() == 1 && est.joint_qd[ji].is_some())
+                    .then(|| (ji, self.model.v_idx[mi]))
+            })
+            .collect();
+        for a in qdd {
+            let (aw, av) = if vel_only {
+                (na::Vector3::zeros(), na::Vector3::zeros())
+            } else {
+                (na::Vector3::new(a[0], a[1], a[2]), na::Vector3::new(a[3], a[4], a[5]))
+            };
+            // The mean velocity over the period moves the pose.
+            let (wm, vm) = (w + 0.5 * dt * aw, v + 0.5 * dt * av);
+            p += r * (vm * dt);
+            r *= na::UnitQuaternion::from_scaled_axis(wm * dt);
+            w += aw * dt;
+            v += av * dt;
+            for &(ji, vi) in &joints {
+                let qd = out.joint_qd[ji].unwrap();
+                let acc = if vel_only { 0.0 } else { a[vi] };
+                out.joint_q[ji] += (qd + 0.5 * dt * acc) * dt;
+                out.joint_qd[ji] = Some(qd + acc * dt);
+            }
+        }
+        out.base_pos = p.into();
+        out.base_quat = r;
+        out.base_ang_vel_w = (r * w).into();
+        out.base_lin_vel_w = (r * v).into();
+        out
+    }
+
     /// The dynamics at `(q, v)`: `M` (with armature), `h` (with joint
     /// damping), FK, and the centroidal Jacobian with its bias. The base
     /// pose and angular velocity of `est` are carried into the state as they

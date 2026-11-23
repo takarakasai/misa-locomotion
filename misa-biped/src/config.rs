@@ -74,6 +74,8 @@ impl Config {
                 friction_mu: None,
                 mu_assumed: None,
                 joint_q_estimate: false,
+                sense_pred_ticks: 0,
+                sense_pred_vel_only: false,
                 f_max_scale: 2.3,
                 f_max: None,
                 eom_hard: true,
@@ -727,6 +729,18 @@ pub struct WbcConfig {
     /// start-up FK and the degraded-solve fallback. false = the plant's
     /// (bit-identical); with no delay and no joint noise the two are equal.
     pub joint_q_estimate: bool,
+    /// `SENSE_PRED_TICKS`: a latency predictor. The estimate is advanced
+    /// that many control periods with the WBC's own generalised
+    /// accelerations of the last that many ticks (oldest first), before the
+    /// walker assembles its state -- for a reading that is that many ticks
+    /// old, and for torques that reach the plant that many ticks late (the
+    /// commands still in flight are the same history). Set it to the sensor
+    /// delay plus the actuator delay. 0 = off (bit-identical).
+    pub sense_pred_ticks: usize,
+    /// `SENSE_PRED_VEL_ONLY`: the predictor holds the velocities and only
+    /// moves the positions (a constant-velocity extrapolation, no command
+    /// history). false = with the accelerations.
+    pub sense_pred_vel_only: bool,
     /// `F_MAX_SCALE` [body weights] and `F_MAX` [N] per foot. None = the
     /// scale x body weight ([`WbcConfig::f_max_per_foot`]).
     pub f_max_scale: f64,
