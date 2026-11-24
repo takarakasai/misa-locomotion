@@ -387,6 +387,85 @@ pub struct Walker<S: WbcStack> {
     /// The WBC's generalised accelerations of the last
     /// `cfg.wbc.sense_pred_ticks` ticks, oldest first (the predictor).
     qdd_hist: std::collections::VecDeque<na::DVector<f64>>,
+    /// SENSE_PRED_AUTO: the online estimate of the total delay.
+    lag_est: LagEstimate,
+}
+
+/// `SENSE_PRED_AUTO` (§74): the total delay (sensor + actuator) identified
+/// with a small known torque dither. Each tick every measured joint gets
+/// +-`a` on top of the WBC's torque (a sign sequence of its own, unrelated
+/// to the state); the measured velocity change of tick t correlates with
+/// the sign sent `L + 1` ticks before it and with no other, since the
+/// control can react to the dither only after it has been seen. (Matching
+/// the measured accelerations against the WBC's own commands instead is
+/// biased by the loop: 3 to 4 ticks with no delay, and pulled to 0 by
+/// sensor noise.)
+#[derive(Default)]
+struct LagEstimate {
+    /// The last tick's measured joint velocities.
+    prev_qd: Vec<Option<f64>>,
+    /// The signs sent, oldest first (one per measured joint row).
+    signs: std::collections::VecDeque<Vec<(usize, usize, f64)>>,
+    /// The averaged correlation per lag 0..=max.
+    corr: Vec<f64>,
+    /// The time averaged so far [s].
+    seen: f64,
+    /// The estimate, once one averaging time has passed.
+    lag: Option<usize>,
+}
+
+impl LagEstimate {
+    /// The tick's measurement in: the correlation per lag and the estimate.
+    fn update(&mut self, est: &crate::robot::StateEstimate, max: usize, dt: f64, tau: f64) -> Option<usize> {
+        if self.corr.len() != max + 1 {
+            self.corr = vec![0.0; max + 1];
+        }
+        if !self.prev_qd.is_empty() && self.signs.len() > max {
+            let a = (dt / tau).min(1.0);
+            let n = self.signs.len();
+            for l in 0..=max {
+                let c: f64 = self.signs[n - 1 - l]
+                    .iter()
+                    .filter_map(|&(ji, _, sg)| {
+                        let (q1, q0) = (est.joint_qd[ji]?, self.prev_qd.get(ji).copied().flatten()?);
+                        Some(sg * (q1 - q0))
+                    })
+                    .sum();
+                self.corr[l] += a * (c - self.corr[l]);
+            }
+            self.seen += dt;
+            if self.seen >= tau {
+                self.lag = (0..=max).max_by(|&i, &j| self.corr[i].total_cmp(&self.corr[j]));
+            }
+        }
+        self.prev_qd = est.joint_qd.clone();
+        self.lag
+    }
+
+    /// The tick's dither out: +-`amp` [Nm] on every measured joint (added to
+    /// `tau`, whose rows are the actuated `v` rows minus the base's 6).
+    fn dither(&mut self, rows: &[(usize, usize)], tick: u64, amp: f64, keep: usize, tau: &mut na::DVector<f64>) {
+        let sg: Vec<(usize, usize, f64)> = rows
+            .iter()
+            .map(|&(ji, vi)| {
+                // splitmix64 of (tick, row): a fixed sequence, unrelated to the state.
+                let mut z = tick.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (vi as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^= z >> 31;
+                (ji, vi, if z & 1 == 1 { 1.0 } else { -1.0 })
+            })
+            .collect();
+        for &(_, vi, s) in &sg {
+            if vi >= 6 && vi - 6 < tau.len() {
+                tau[vi - 6] += amp * s;
+            }
+        }
+        self.signs.push_back(sg);
+        while self.signs.len() > keep {
+            self.signs.pop_front();
+        }
+    }
 }
 
 impl WalkerInit {
@@ -1140,6 +1219,7 @@ impl WalkerInit {
             stack,
             t: 0.0,
             qdd_hist: std::collections::VecDeque::new(),
+            lag_est: LagEstimate::default(),
         }
     }
 }
@@ -1162,8 +1242,23 @@ impl<S: WbcStack> Walker<S> {
         // the CoM and its Jacobian. The phases read it through `TickObs`.
         // SENSE_PRED_TICKS: the estimate advanced by the last ticks' own
         // accelerations (the reading's age plus the torques in flight).
-        let predicted = (wcfg.wbc.sense_pred_ticks > 0)
-            .then(|| robot.predict(obs.estimate, self.qdd_hist.iter(), k.dt, wcfg.wbc.sense_pred_vel_only));
+        // SENSE_PRED_AUTO: its length from the estimated delay.
+        let n_pred = if wcfg.wbc.sense_pred_auto > 0 {
+            let before = self.lag_est.lag;
+            let lag = self.lag_est.update(obs.estimate, wcfg.wbc.sense_pred_auto, k.dt, wcfg.wbc.sense_pred_auto_tau);
+            if lag != before {
+                if let Some(l) = lag {
+                    outln!(out, "  [pred] t={t:.3} delay estimate {l} ticks -> predict {}", l + wcfg.wbc.sense_pred_auto_add);
+                }
+            }
+            lag.map_or(wcfg.wbc.sense_pred_ticks, |l| l + wcfg.wbc.sense_pred_auto_add)
+        } else {
+            wcfg.wbc.sense_pred_ticks
+        };
+        let predicted = (n_pred > 0).then(|| {
+            let skip = self.qdd_hist.len().saturating_sub(n_pred);
+            robot.predict(obs.estimate, self.qdd_hist.iter().skip(skip), k.dt, wcfg.wbc.sense_pred_vel_only)
+        });
         let estimate = predicted.as_ref().unwrap_or(obs.estimate);
         let state = robot.assemble(estimate);
         let obs = &TickObs {
@@ -1219,7 +1314,7 @@ impl<S: WbcStack> Walker<S> {
         let TaskRefs { roll, pitch, rp_ref, tau_gravity, shares, swing_tgt, swing_cmd_acc_z, .. } = refs;
         let WbcSolution {
             sol,
-            extracted,
+            mut extracted,
             level_names,
             forces_nominal,
             acc_dbg,
@@ -1308,9 +1403,19 @@ impl<S: WbcStack> Walker<S> {
             hip_z,
             stride_max_now,
         };
-        if wcfg.wbc.sense_pred_ticks > 0 {
+        let keep = if wcfg.wbc.sense_pred_auto > 0 {
+            wcfg.wbc.sense_pred_ticks.max(wcfg.wbc.sense_pred_auto + wcfg.wbc.sense_pred_auto_add.max(1))
+        } else {
+            wcfg.wbc.sense_pred_ticks
+        };
+        if keep > 0 {
             self.qdd_hist.push_back(extracted.qddot.clone());
-            while self.qdd_hist.len() > wcfg.wbc.sense_pred_ticks {
+            if wcfg.wbc.sense_pred_auto > 0 {
+                // The identification's dither, after the history took the WBC's own command.
+                let rows = robot.measured_joint_rows(estimate);
+                self.lag_est.dither(&rows, obs.tick as u64, wcfg.wbc.sense_pred_dither, keep, &mut extracted.tau);
+            }
+            while self.qdd_hist.len() > keep {
                 self.qdd_hist.pop_front();
             }
         }

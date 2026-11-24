@@ -76,6 +76,10 @@ impl Config {
                 joint_q_estimate: false,
                 sense_pred_ticks: 0,
                 sense_pred_vel_only: false,
+                sense_pred_auto: 0,
+                sense_pred_auto_add: 1,
+                sense_pred_auto_tau: 0.5,
+                sense_pred_dither: 1.0,
                 f_max_scale: 2.3,
                 f_max: None,
                 eom_hard: true,
@@ -743,6 +747,23 @@ pub struct WbcConfig {
     /// moves the positions (a constant-velocity extrapolation, no command
     /// history). false = with the accelerations.
     pub sense_pred_vel_only: bool,
+    /// `SENSE_PRED_AUTO`: the predictor's length from an online estimate of
+    /// the total delay (sensor + actuator) instead of `sense_pred_ticks`.
+    /// The walker adds a small +- torque dither (`sense_pred_dither`) to its
+    /// command and correlates it with the measured joint velocity changes at
+    /// lag 0..=this many ticks; the lag of the largest correlation, averaged
+    /// over `sense_pred_auto_tau`, is the delay `L`, and the
+    /// estimate is advanced `L + sense_pred_auto_add` ticks. Until one
+    /// `tau` has passed, `sense_pred_ticks` is used. 0 = off (bit-identical).
+    pub sense_pred_auto: usize,
+    /// `SENSE_PRED_AUTO_ADD`: the ticks added to the estimated delay (the
+    /// zero-order hold's tick is the 1). Default 1.
+    pub sense_pred_auto_add: usize,
+    /// `SENSE_PRED_AUTO_TAU` [s]: the averaging time of the correlation.
+    pub sense_pred_auto_tau: f64,
+    /// `SENSE_PRED_DITHER` [Nm]: the identification's torque dither, +- on
+    /// every measured joint each tick (only with `sense_pred_auto`).
+    pub sense_pred_dither: f64,
     /// `F_MAX_SCALE` [body weights] and `F_MAX` [N] per foot. None = the
     /// scale x body weight ([`WbcConfig::f_max_per_foot`]).
     pub f_max_scale: f64,

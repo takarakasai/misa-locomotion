@@ -180,6 +180,17 @@ impl RobotModel {
         (q, v)
     }
 
+    /// The 1-dof joints whose velocity `est` measures, as (joint, `v` row).
+    pub fn measured_joint_rows(&self, est: &StateEstimate) -> Vec<(usize, usize)> {
+        (0..self.joint_names.len())
+            .filter_map(|ji| {
+                let mi = self.a2m[ji]?;
+                (self.model.joints[mi].joint_type.nv() == 1 && est.joint_qd[ji].is_some())
+                    .then(|| (ji, self.model.v_idx[mi]))
+            })
+            .collect()
+    }
+
     /// The estimate advanced by `qdd` (generalised accelerations, oldest
     /// first), one control period `dt` each (`Config::wbc.sense_pred_ticks`).
     /// The base is integrated in its body frame, where misarta's free-flyer
@@ -199,13 +210,7 @@ impl RobotModel {
         let mut p = na::Vector3::from(est.base_pos);
         let mut w = r.inverse_transform_vector(&na::Vector3::from(est.base_ang_vel_w));
         let mut v = r.inverse_transform_vector(&na::Vector3::from(est.base_lin_vel_w));
-        let joints: Vec<(usize, usize)> = (0..self.joint_names.len())
-            .filter_map(|ji| {
-                let mi = self.a2m[ji]?;
-                (self.model.joints[mi].joint_type.nv() == 1 && est.joint_qd[ji].is_some())
-                    .then(|| (ji, self.model.v_idx[mi]))
-            })
-            .collect();
+        let joints = self.measured_joint_rows(est);
         for a in qdd {
             let (aw, av) = if vel_only {
                 (na::Vector3::zeros(), na::Vector3::zeros())
