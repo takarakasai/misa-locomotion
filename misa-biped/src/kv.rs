@@ -148,6 +148,7 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
             sense_pred_auto_add: num("SENSE_PRED_AUTO_ADD", d.sense_pred_auto_add as f64).max(0.0) as usize,
             sense_pred_auto_tau: num("SENSE_PRED_AUTO_TAU", d.sense_pred_auto_tau).max(1e-3),
             sense_pred_dither: num("SENSE_PRED_DITHER", d.sense_pred_dither).max(0.0),
+            sense_pred_dither_t: num("SENSE_PRED_DITHER_T", d.sense_pred_dither_t).max(0.0),
             f_max_scale: num("F_MAX_SCALE", d.f_max_scale),
             f_max: opt("F_MAX").or(d.f_max),
             eom_hard: flag("EOM_HARD", d.eom_hard),

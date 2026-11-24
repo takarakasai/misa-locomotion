@@ -80,6 +80,7 @@ impl Config {
                 sense_pred_auto_add: 1,
                 sense_pred_auto_tau: 0.5,
                 sense_pred_dither: 1.0,
+                sense_pred_dither_t: 0.0,
                 f_max_scale: 2.3,
                 f_max: None,
                 eom_hard: true,
@@ -764,6 +765,10 @@ pub struct WbcConfig {
     /// `SENSE_PRED_DITHER` [Nm]: the identification's torque dither, +- on
     /// every measured joint each tick (only with `sense_pred_auto`).
     pub sense_pred_dither: f64,
+    /// `SENSE_PRED_DITHER_T` [s]: the dither and the identification stop at
+    /// this time and the delay found is held (a delay is the hardware's;
+    /// the dither costs a little all the time). 0 = never stop.
+    pub sense_pred_dither_t: f64,
     /// `F_MAX_SCALE` [body weights] and `F_MAX` [N] per foot. None = the
     /// scale x body weight ([`WbcConfig::f_max_per_foot`]).
     pub f_max_scale: f64,

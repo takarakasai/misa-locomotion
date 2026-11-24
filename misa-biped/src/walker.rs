@@ -1245,7 +1245,12 @@ impl<S: WbcStack> Walker<S> {
         // SENSE_PRED_AUTO: its length from the estimated delay.
         let n_pred = if wcfg.wbc.sense_pred_auto > 0 {
             let before = self.lag_est.lag;
-            let lag = self.lag_est.update(obs.estimate, wcfg.wbc.sense_pred_auto, k.dt, wcfg.wbc.sense_pred_auto_tau);
+            let ident = wcfg.wbc.sense_pred_dither_t <= 0.0 || t <= wcfg.wbc.sense_pred_dither_t;
+            let lag = if ident {
+                self.lag_est.update(obs.estimate, wcfg.wbc.sense_pred_auto, k.dt, wcfg.wbc.sense_pred_auto_tau)
+            } else {
+                self.lag_est.lag
+            };
             if lag != before {
                 if let Some(l) = lag {
                     outln!(out, "  [pred] t={t:.3} delay estimate {l} ticks -> predict {}", l + wcfg.wbc.sense_pred_auto_add);
@@ -1410,7 +1415,7 @@ impl<S: WbcStack> Walker<S> {
         };
         if keep > 0 {
             self.qdd_hist.push_back(extracted.qddot.clone());
-            if wcfg.wbc.sense_pred_auto > 0 {
+            if wcfg.wbc.sense_pred_auto > 0 && (wcfg.wbc.sense_pred_dither_t <= 0.0 || t <= wcfg.wbc.sense_pred_dither_t) {
                 // The identification's dither, after the history took the WBC's own command.
                 let rows = robot.measured_joint_rows(estimate);
                 self.lag_est.dither(&rows, obs.tick as u64, wcfg.wbc.sense_pred_dither, keep, &mut extracted.tau);
